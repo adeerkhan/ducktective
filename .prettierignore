@@ -1,0 +1,6 @@
+node_modules
+dist
+ref
+screenshots
+artifacts
+site/src/routeTree.gen.ts
