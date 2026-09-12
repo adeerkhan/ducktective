@@ -2,12 +2,7 @@ import { cn } from "@/lib/utils";
 
 export function DuckMark({ className }: { className?: string }) {
   return (
-    <svg
-      viewBox="0 0 32 32"
-      className={cn("size-7", className)}
-      aria-hidden="true"
-      fill="none"
-    >
+    <svg viewBox="0 0 32 32" className={cn("size-7", className)} aria-hidden="true" fill="none">
       <circle cx="13" cy="12" r="6.2" stroke="currentColor" strokeWidth="1.6" />
       <path d="M19.2 12.2h5.2l-5.2 3.4v-3.4z" fill="currentColor" />
       <path

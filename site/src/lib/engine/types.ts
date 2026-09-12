@@ -6,7 +6,10 @@ export type CaseStatus =
   | "open"
   | "confirmed"
   | "does_not_reproduce"
-  | "exhausted";
+  | "exhausted"
+  // Canonical statuses come from skills/ducktective/case-file.schema.json —
+  // `unverified` is where an investigation with no confirmed cause has to land.
+  | "unverified";
 
 export type Confidence = "high" | "medium" | "low" | "none";
 
@@ -22,6 +25,10 @@ export type Reproduction = {
   command: string;
   outcome: ReproductionOutcome;
   durationMs: number;
+  /** What the process actually returned — the difference between a verdict and a mood. */
+  exitCode?: number | null;
+  /** Which runner produced the traceback, so the reader knows how to re-run it. */
+  runner?: "pytest" | "unittest" | "node-test" | "unknown";
   stdout: string;
   stderr: string;
   stack: string[];
@@ -38,6 +45,15 @@ export type Candidate = {
   checkSource: string;
   verdict: CheckVerdict;
   evidence: string;
+  /**
+   * Oracle provenance, from run_check.mjs: what the hypothesis predicted, what
+   * the process returned, and the known-good control that made the check mean
+   * something. Without these the sheet shows a verdict with no way to audit it.
+   */
+  predicted?: "pass" | "fail";
+  checkExitCode?: number | null;
+  control?: string;
+  controlExitCode?: number | null;
 };
 
 export type CaseFile = {

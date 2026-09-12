@@ -1,5 +1,10 @@
 name: Deploy site
 
+# Pages serves only static files, so this workflow's contract is: prove the
+# workspace is sound (typecheck, tests, lint), build `site/dist`, publish it as a
+# Pages artifact. `SITE_BASE` must match the `/ducktective/` project-page prefix
+# that site/vite.config.ts and site/src/main.tsx derive their base path from.
+
 on:
   push:
     branches: [main]
@@ -18,10 +23,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run typecheck
@@ -29,10 +34,8 @@ jobs:
       - run: npm run lint
       - run: npm run build
         env:
-          # Project page: adeerkhan.github.io/ducktective/ — matches SITE_BASE in
-          # site/vite.config.ts. Only set here if the default ever changes.
           SITE_BASE: /ducktective/
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site/dist
 
@@ -44,4 +47,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

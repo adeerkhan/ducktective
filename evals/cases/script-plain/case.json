@@ -1,0 +1,5 @@
+{
+  "name": "plain python script, no test runner at all",
+  "cmd": "{py} run.py",
+  "expect": { "outcome": "reproduced", "runner": "unknown", "firstFrameFile": "helper.py" }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "plain script that no longer exhibits the symptom",
+  "cmd": "{py} run.py",
+  "expect": { "outcome": "does_not_reproduce", "candidates": 0 }
+}

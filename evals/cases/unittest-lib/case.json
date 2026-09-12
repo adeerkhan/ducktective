@@ -1,0 +1,5 @@
+{
+  "name": "unittest KeyError raised two frames down",
+  "cmd": "{py} -m unittest -q test_lib",
+  "expect": { "outcome": "reproduced", "runner": "unittest", "firstFrameFile": "lib.py" }
+}

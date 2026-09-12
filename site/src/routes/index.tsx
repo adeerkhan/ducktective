@@ -47,9 +47,9 @@ function Home() {
             No claim without a check.
           </h1>
           <p className="mt-5 max-w-xl text-base leading-relaxed text-muted sm:text-lg">
-            Ducktective is a thin protocol the host agent is forced to follow. It does not localize, does not
-            patch first, and does not get a vote when the failing command is green. It owns reproduction,
-            falsification, and the case file.
+            Ducktective is a thin protocol the host agent is forced to follow. It does not localize,
+            does not patch first, and does not get a vote when the failing command is green. It owns
+            reproduction, falsification, and the case file.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <Link to="/workbench">
@@ -66,26 +66,33 @@ function Home() {
           </div>
         </div>
         <aside className="rounded-xl bg-bg-elevated p-5 shadow-[0_0_0_1px_rgba(236,236,232,0.08)] sm:p-6">
-          <p className="font-mono text-[11px] tracking-[0.16em] text-muted uppercase">Why this exists</p>
+          <p className="font-mono text-[11px] tracking-[0.16em] text-muted uppercase">
+            Why this exists
+          </p>
           <ul className="mt-4 space-y-4 text-sm leading-relaxed">
             <li>
-              <span className="font-medium text-fg">GPT-5 submits on 100% of SWE-bench runs and resolves 44%.</span>{" "}
+              <span className="font-medium text-fg">
+                GPT-5 submits on 100% of SWE-bench runs and resolves 44%.
+              </span>{" "}
               <span className="text-muted">
-                68% of those failures are silent semantic failures — the same wrong reading, confidently, every time.
+                68% of those failures are silent semantic failures — the same wrong reading,
+                confidently, every time.
               </span>
             </li>
             <li>
               <span className="font-medium text-fg">LocAgent has 627 stars.</span>{" "}
               <span className="text-muted">
-                OpenHands has 87k. Graph localizers do not lose because the paper is weak. They lose because nobody
-                wants another agent to operate.
+                OpenHands has 87k. Graph localizers do not lose because the paper is weak. They lose
+                because nobody wants another agent to operate.
               </span>
             </li>
             <li>
-              <span className="font-medium text-fg">Agentless has 2.1k stars by being smaller.</span>{" "}
+              <span className="font-medium text-fg">
+                Agentless has 2.1k stars by being smaller.
+              </span>{" "}
               <span className="text-muted">
-                Ducktective is that move for verification: a skill inside Claude Code, Cursor, and Codex, not a rival
-                runtime.
+                Ducktective is that move for verification: a skill inside Claude Code, Cursor, and
+                Codex, not a rival runtime.
               </span>
             </li>
           </ul>
@@ -93,9 +100,24 @@ function Home() {
       </section>
 
       <section className="mt-16 grid gap-3 sm:grid-cols-3">
-        <Fact icon={Ban} kicker="Gate 0" title="Reproduce or stop" body="If the command does not fail, the case is closed. Action bias is the failure mode. Abstain is the feature." />
-        <Fact icon={FlaskConical} kicker="The spine" title="Falsify, don't narrate" body="A hypothesis is only a claim. A five-line check that actually runs is evidence." />
-        <Fact icon={FileText} kicker="The product" title="A case file, not a chat" body="Humans merge from a docket they can audit. Chat is a scratch pad. This is the record." />
+        <Fact
+          icon={Ban}
+          kicker="Gate 0"
+          title="Reproduce or stop"
+          body="If the command does not fail, the case is closed. Action bias is the failure mode. Abstain is the feature."
+        />
+        <Fact
+          icon={FlaskConical}
+          kicker="The spine"
+          title="Falsify, don't narrate"
+          body="A hypothesis is only a claim. A five-line check that actually runs is evidence."
+        />
+        <Fact
+          icon={FileText}
+          kicker="The product"
+          title="A case file, not a chat"
+          body="Humans merge from a docket they can audit. Chat is a scratch pad. This is the record."
+        />
       </section>
 
       <section className="mt-20">
@@ -123,15 +145,18 @@ function Home() {
         <div>
           <h2 className="font-display text-2xl tracking-tight">Stars follow use, not graphs</h2>
           <p className="mt-4 text-sm leading-relaxed text-muted">
-            Academic localization agents stall in the hundreds of stars because they compete with LocAgent, AutoCodeRover,
-            and the host model on a problem that is already funded. Skills that install in the agent you already run, fire
-            on every failed test, and leave an artifact you keep, sit in a different market: Agentless (2.1k), focused
-            skill marketplaces (~1.4k), AutoCodeRover (3.1k). A verification skill that becomes the default{" "}
-            <span className="text-fg">investigate this</span> command can clear that band without beating OpenHands.
+            Academic localization agents stall in the hundreds of stars because they compete with
+            LocAgent, AutoCodeRover, and the host model on a problem that is already funded. Skills
+            that install in the agent you already run, fire on every failed test, and leave an
+            artifact you keep, sit in a different market: Agentless (2.1k), focused skill
+            marketplaces (~1.4k), AutoCodeRover (3.1k). A verification skill that becomes the
+            default <span className="text-fg">investigate this</span> command can clear that band
+            without beating OpenHands.
           </p>
           <p className="mt-3 text-sm leading-relaxed text-muted">
-            Coding-agent traces are already in 22–28% of a 128k GitHub sample. The scarce resource is not another
-            localizer. It is a prosecutor that will not let the model close the case in prose.
+            Coding-agent traces are already in 22–28% of a 128k GitHub sample. The scarce resource
+            is not another localizer. It is a prosecutor that will not let the model close the case
+            in prose.
           </p>
         </div>
         <div className="overflow-hidden rounded-xl bg-bg-elevated shadow-[0_0_0_1px_rgba(236,236,232,0.08)]">
@@ -162,10 +187,12 @@ function Home() {
               <ShieldCheck className="size-3.5" />
               Two weeks. Then measure.
             </p>
-            <h2 className="mt-2 font-display text-2xl tracking-tight">The workbench is week one, running.</h2>
+            <h2 className="mt-2 font-display text-2xl tracking-tight">
+              The workbench is week one, running.
+            </h2>
             <p className="mt-2 text-sm leading-relaxed text-muted">
-              Five real bugs execute in the browser: off-by-one, leaked cache, wrong boolean, UTC slice, and a stale
-              ticket that must not be touched. The last one is the product.
+              Five real bugs execute in the browser: off-by-one, leaked cache, wrong boolean, UTC
+              slice, and a stale ticket that must not be touched. The last one is the product.
             </p>
           </div>
           <Link to="/workbench">

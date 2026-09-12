@@ -1,0 +1,45 @@
+name: Skill stress run
+
+# The gate's stop-correctness and nearest-fault ranking are behaviour, and
+# behaviour regresses quietly: a regex with an empty alternative passed every
+# eval for the wrong reason once already. This runs the corpus against real
+# pytest and real coverage.py so that class of bug has somewhere to be caught.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "skills/**"
+      - "evals/**"
+      - ".github/workflows/eval.yml"
+  pull_request:
+    paths:
+      - "skills/**"
+      - "evals/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # The corpus shells out to pytest and coverage.py; there is no .venv-eval on
+      # the runner, so evals/run.mjs falls back to the interpreter on PATH.
+      - run: pip install --disable-pip-version-check pytest coverage
+      - run: npm ci
+      - run: npm test
+      - run: npm run eval

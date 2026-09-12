@@ -49,3 +49,18 @@ test("the site imports SKILL.md instead of embedding a copy", () => {
   assert.match(page, /skills\/ducktective\/SKILL\.md\?raw/);
   assert.ok(!statSync(join(ROOT, "site", "src", "lib", "skill-doc.ts"), { throwIfNoEntry: false }));
 });
+
+test("every tool the skill ships is documented in SKILL.md", () => {
+  const skill = readFileSync(SKILL, "utf8");
+  const scriptsDir = join(ROOT, "skills", "ducktective", "scripts");
+  const tools = readdirSync(scriptsDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith(".mjs"))
+    .map((e) => e.name);
+  assert.ok(tools.length > 0, "expected at least one tool script");
+  for (const tool of tools) {
+    assert.ok(
+      skill.includes(tool),
+      `SKILL.md never mentions ${tool} — an undocumented tool is a tool nobody runs`,
+    );
+  }
+});

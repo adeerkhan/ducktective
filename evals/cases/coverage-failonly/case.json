@@ -1,0 +1,11 @@
+{
+  "name": "fail-only coverage lines from a real coverage.py run",
+  "coverage": { "baseline": "test_ship_ok.py", "failing": "test_ship_bad.py" },
+  "cmd": "{py} -m pytest -q test_ship_bad.py",
+  "expect": {
+    "outcome": "reproduced",
+    "runner": "pytest",
+    "firstFrameFile": "test_ship_bad.py",
+    "coverageLines": true
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "node:test failure reported on stdout",
+  "cmd": "{node} --test totals.check.mjs",
+  "expect": { "outcome": "reproduced", "runner": "node-test", "firstFrameFile": "totals.check.mjs" }
+}

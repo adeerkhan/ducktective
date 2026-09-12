@@ -14,7 +14,11 @@
     "paths": {
       "@/*": ["./src/*"]
     },
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    // case-import.mjs is plain JS with JSDoc types so `npm test` can run it at
+    // the repo root; checkJs keeps it honest against types.ts.
+    "allowJs": true,
+    "checkJs": true
   },
   "include": ["src", "vite.config.ts"]
 }

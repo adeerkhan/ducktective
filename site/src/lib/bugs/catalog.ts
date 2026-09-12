@@ -39,7 +39,13 @@ function assertEqual(actual: unknown, expected: unknown, label: string) {
   }
 }
 
-function sliceRange(arr: number[], start: number, end: number, cov: CoverageMap, bucket: "fail" | "pass") {
+function sliceRange(
+  arr: number[],
+  start: number,
+  end: number,
+  cov: CoverageMap,
+  bucket: "fail" | "pass",
+) {
   hit(cov, "range:sliceRange", bucket);
   const out: number[] = [];
   for (let i = start; i <= end; i++) {
@@ -86,7 +92,12 @@ function canAccess(
   return user.admin && resource.public;
 }
 
-function isSameLocalDay(isoUtc: string, localYmd: string, cov: CoverageMap, bucket: "fail" | "pass") {
+function isSameLocalDay(
+  isoUtc: string,
+  localYmd: string,
+  cov: CoverageMap,
+  bucket: "fail" | "pass",
+) {
   hit(cov, "dates:isSameLocalDay", bucket);
   const slice = isoUtc.slice(0, 10);
   hit(cov, "dates:slice", bucket);
@@ -144,8 +155,7 @@ export function sum(arr) {
         id: "mut",
         location: "sliceRange · lib/range.js:2",
         why: "On the failing stack, and the extra value looks like the input was mutated.",
-        hypothesis:
-          "sliceRange mutates the input array, so later assertions see leftover values.",
+        hypothesis: "sliceRange mutates the input array, so later assertions see leftover values.",
         checkName: "input identity oracle",
         checkSource: `const src = [10, 20, 30, 40]
 const copy = src.slice()

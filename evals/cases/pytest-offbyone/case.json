@@ -1,0 +1,9 @@
+{
+  "name": "pytest failing assert, fault inside the module",
+  "cmd": "{py} -m pytest -q test_money.py",
+  "expect": {
+    "outcome": "reproduced",
+    "runner": "pytest",
+    "firstFrameFile": "test_money.py"
+  }
+}

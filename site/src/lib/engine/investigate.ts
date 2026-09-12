@@ -1,11 +1,11 @@
-import { FIXTURES, getFixture, sitesFromCoverage, type CoverageMap, type Fixture } from "@/lib/bugs/catalog";
-import type {
-  Candidate,
-  CaseFile,
-  CheckVerdict,
-  Reproduction,
-  Trace,
-} from "@/lib/engine/types";
+import {
+  FIXTURES,
+  getFixture,
+  sitesFromCoverage,
+  type CoverageMap,
+  type Fixture,
+} from "@/lib/bugs/catalog";
+import type { Candidate, CaseFile, CheckVerdict, Reproduction, Trace } from "@/lib/engine/types";
 
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -22,13 +22,22 @@ function stackFrom(error: unknown): string[] {
   return [String(error)];
 }
 
-function runProbe(fixture: Fixture, which: "fail" | "pass", cov: CoverageMap): { ok: boolean; log: string; stack: string[]; ms: number } {
+function runProbe(
+  fixture: Fixture,
+  which: "fail" | "pass",
+  cov: CoverageMap,
+): { ok: boolean; log: string; stack: string[]; ms: number } {
   const start = performance.now();
   try {
     if (which === "fail") {
       fixture.failing.run(cov, "fail");
     }
-    return { ok: true, log: `${fixture.failing.name} passed`, stack: [], ms: Math.max(1, Math.round(performance.now() - start)) };
+    return {
+      ok: true,
+      log: `${fixture.failing.name} passed`,
+      stack: [],
+      ms: Math.max(1, Math.round(performance.now() - start)),
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -92,7 +101,10 @@ function runCandidateCheck(fixture: Fixture, candidateId: string): CheckRun {
       sliceRange(src, 1, 3, cov, "fail");
       const same = JSON.stringify(src) === JSON.stringify(copy);
       return same
-        ? { verdict: "falsified", evidence: "Input [10,20,30,40] is unchanged after the call. Mutation is not the fault." }
+        ? {
+            verdict: "falsified",
+            evidence: "Input [10,20,30,40] is unchanged after the call. Mutation is not the fault.",
+          }
         : { verdict: "confirmed", evidence: `Input mutated to ${JSON.stringify(src)}.` };
     }
     if (candidateId === "inc") {
@@ -100,8 +112,14 @@ function runCandidateCheck(fixture: Fixture, candidateId: string): CheckRun {
       const got = sliceRange([10, 20, 30, 40], 1, 3, cov, "fail");
       const exclusive = JSON.stringify(got) === JSON.stringify([20, 30]);
       return exclusive
-        ? { verdict: "falsified", evidence: "Exclusive-end oracle held. Loop bound is not the fault." }
-        : { verdict: "confirmed", evidence: `Exclusive-end oracle failed: got ${JSON.stringify(got)}, wanted [20,30]. Inclusive \`i <= end\` survives.` };
+        ? {
+            verdict: "falsified",
+            evidence: "Exclusive-end oracle held. Loop bound is not the fault.",
+          }
+        : {
+            verdict: "confirmed",
+            evidence: `Exclusive-end oracle failed: got ${JSON.stringify(got)}, wanted [20,30]. Inclusive \`i <= end\` survives.`,
+          };
     }
   }
 
@@ -112,7 +130,10 @@ function runCandidateCheck(fixture: Fixture, candidateId: string): CheckRun {
       const got = getOrders("ada", cov, "fail");
       const ok = JSON.stringify(got) === JSON.stringify([11, 22]);
       return ok
-        ? { verdict: "falsified", evidence: "Fresh load for ada is [11, 22]. loadOrders is not producing sorted data." }
+        ? {
+            verdict: "falsified",
+            evidence: "Fresh load for ada is [11, 22]. loadOrders is not producing sorted data.",
+          }
         : { verdict: "confirmed", evidence: `Fresh load returned ${JSON.stringify(got)}.` };
     }
     if (candidateId === "ref") {
@@ -126,7 +147,10 @@ function runCandidateCheck(fixture: Fixture, candidateId: string): CheckRun {
           evidence: "Two calls return the same array reference. A caller can mutate the store.",
         };
       }
-      return { verdict: "falsified", evidence: "Calls return distinct copies. Reference leak is not present." };
+      return {
+        verdict: "falsified",
+        evidence: "Calls return distinct copies. Reference leak is not present.",
+      };
     }
   }
 
@@ -134,15 +158,24 @@ function runCandidateCheck(fixture: Fixture, candidateId: string): CheckRun {
     if (candidateId === "flag") {
       const resource = { public: true };
       return resource.public
-        ? { verdict: "falsified", evidence: "The failing resource is marked public:true. The flag is not the fault." }
+        ? {
+            verdict: "falsified",
+            evidence: "The failing resource is marked public:true. The flag is not the fault.",
+          }
         : { verdict: "confirmed", evidence: "Public flag is false. Deny is correct." };
     }
     if (candidateId === "op") {
       const { canAccess } = getAccessHelpers();
       const ok = canAccess({ admin: false }, { public: true }, cov, "fail");
       return ok
-        ? { verdict: "falsified", evidence: "Guest + public is allowed. Operator is not the fault." }
-        : { verdict: "confirmed", evidence: "Guest + public is denied. `&&` requires admin even for public resources." };
+        ? {
+            verdict: "falsified",
+            evidence: "Guest + public is allowed. Operator is not the fault.",
+          }
+        : {
+            verdict: "confirmed",
+            evidence: "Guest + public is denied. `&&` requires admin even for public resources.",
+          };
     }
   }
 
@@ -153,8 +186,15 @@ function runCandidateCheck(fixture: Fixture, candidateId: string): CheckRun {
       const local = "2026-09-11";
       const consistent = utcPrefix !== local;
       return consistent
-        ? { verdict: "falsified", evidence: "02:30Z is Sep 11 in US Pacific. The test's expected local day matches the product, not a typo." }
-        : { verdict: "confirmed", evidence: "Expected day equals the UTC prefix. The test is asserting UTC." };
+        ? {
+            verdict: "falsified",
+            evidence:
+              "02:30Z is Sep 11 in US Pacific. The test's expected local day matches the product, not a typo.",
+          }
+        : {
+            verdict: "confirmed",
+            evidence: "Expected day equals the UTC prefix. The test is asserting UTC.",
+          };
     }
     if (candidateId === "slice") {
       const { isSameLocalDay } = getDateHelpers();
@@ -162,16 +202,28 @@ function runCandidateCheck(fixture: Fixture, candidateId: string): CheckRun {
       const ok = isSameLocalDay(iso, "2026-09-11", cov, "fail");
       return ok
         ? { verdict: "falsified", evidence: "Local-day oracle held. UTC prefix is not the fault." }
-        : { verdict: "confirmed", evidence: `UTC prefix of ${iso} is ${iso.slice(0, 10)}, not 2026-09-11. Slice-of-ISO is the fault.` };
+        : {
+            verdict: "confirmed",
+            evidence: `UTC prefix of ${iso} is ${iso.slice(0, 10)}, not 2026-09-11. Slice-of-ISO is the fault.`,
+          };
     }
   }
 
-  return { verdict: "inconclusive", evidence: "No executable check is registered for this candidate." };
+  return {
+    verdict: "inconclusive",
+    evidence: "No executable check is registered for this candidate.",
+  };
 }
 
 function getRangeHelpers() {
   return {
-    sliceRange: (arr: number[], start: number, end: number, _cov: CoverageMap, _b: "fail" | "pass") => {
+    sliceRange: (
+      arr: number[],
+      start: number,
+      end: number,
+      _cov: CoverageMap,
+      _b: "fail" | "pass",
+    ) => {
       const out: number[] = [];
       for (let i = start; i <= end; i++) {
         if (i >= 0 && i < arr.length) out.push(arr[i]!);
@@ -196,8 +248,12 @@ function getCacheHelpers() {
 
 function getAccessHelpers() {
   return {
-    canAccess: (user: { admin: boolean }, resource: { public: boolean }, _c: CoverageMap, _b: "fail" | "pass") =>
-      user.admin && resource.public,
+    canAccess: (
+      user: { admin: boolean },
+      resource: { public: boolean },
+      _c: CoverageMap,
+      _b: "fail" | "pass",
+    ) => user.admin && resource.public,
   };
 }
 
@@ -217,7 +273,9 @@ function stampCandidates(fixture: Fixture): Candidate[] {
   }));
 }
 
-function closeCase(partial: Omit<CaseFile, "id" | "openedAt"> & { id?: string; openedAt?: string }): CaseFile {
+function closeCase(
+  partial: Omit<CaseFile, "id" | "openedAt"> & { id?: string; openedAt?: string },
+): CaseFile {
   return {
     id: partial.id ?? newId("DT"),
     openedAt: partial.openedAt ?? new Date().toISOString(),
@@ -254,7 +312,11 @@ export function investigate(fixtureId: string): Trace {
           ? "The failing command passed. Ducktective stops. No patch, no 'improvements'."
           : "Reproduction errored. Case closed without a cause.",
     });
-    steps.push({ kind: "halt", reason: reproduction.outcome === "error" ? "error" : "does_not_reproduce", caseFile });
+    steps.push({
+      kind: "halt",
+      reason: reproduction.outcome === "error" ? "error" : "does_not_reproduce",
+      caseFile,
+    });
     return { fixtureId, steps, caseFile };
   }
 

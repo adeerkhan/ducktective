@@ -19,7 +19,14 @@ function overlap(a: Set<string>, b: Set<string>): number {
 }
 
 function blob(c: CaseFile): string {
-  return [c.title, c.repo, c.symptom, c.confirmedCause ?? "", c.leadingHypothesis ?? "", c.status].join(" ");
+  return [
+    c.title,
+    c.repo,
+    c.symptom,
+    c.confirmedCause ?? "",
+    c.leadingHypothesis ?? "",
+    c.status,
+  ].join(" ");
 }
 
 export function loadRapSheet(): CaseFile[] {
@@ -42,7 +49,11 @@ export function saveCase(file: CaseFile): CaseFile[] {
   return next;
 }
 
-export function similarCases(file: CaseFile, pool: CaseFile[], limit = 3): { caseFile: CaseFile; score: number }[] {
+export function similarCases(
+  file: CaseFile,
+  pool: CaseFile[],
+  limit = 3,
+): { caseFile: CaseFile; score: number }[] {
   const q = tokenize(blob(file));
   return pool
     .filter((c) => c.id !== file.id)

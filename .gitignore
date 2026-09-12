@@ -5,7 +5,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
-
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
@@ -157,3 +156,19 @@ screenshots/
 .tanstack/
 .node_modules.lock
 .project_id
+
+# Ducktective's own case files: this repo is the skill's workshop, not its
+# patient. Dogfooding artifacts stay local (they are per-investigation output).
+.ducktective/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.venv-eval/
+
+# Eval scratch: coverage artifacts and drafts from the stress run.
+evals/.work/
+cov-*.json
+.coverage
+.coverage.*
+htmlcov/

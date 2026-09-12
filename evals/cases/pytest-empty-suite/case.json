@@ -1,0 +1,5 @@
+{
+  "name": "pytest collects nothing (renamed tests, stale ticket)",
+  "cmd": "{py} -m pytest -q",
+  "expect": { "outcome": "error", "candidates": 0 }
+}

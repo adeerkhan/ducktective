@@ -1,0 +1,5 @@
+{
+  "name": "unittest module name mistyped",
+  "cmd": "{py} -m unittest -q test_typooo",
+  "expect": { "outcome": "error", "candidates": 0 }
+}

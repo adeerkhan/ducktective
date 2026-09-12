@@ -7,15 +7,10 @@ const stamps: Record<CaseFile["status"], string> = {
   confirmed: "CONFIRMED",
   does_not_reproduce: "DOES NOT REPRODUCE",
   exhausted: "EXHAUSTED",
+  unverified: "UNVERIFIED",
 };
 
-export function CaseFileSheet({
-  file,
-  className,
-}: {
-  file: CaseFile;
-  className?: string;
-}) {
+export function CaseFileSheet({ file, className }: { file: CaseFile; className?: string }) {
   return (
     <article
       className={cn(
@@ -29,7 +24,9 @@ export function CaseFileSheet({
           <p className="font-mono text-[11px] tracking-[0.18em] text-paper-muted uppercase">
             Case {file.id}
           </p>
-          <h2 className="mt-1 font-display text-xl font-medium tracking-tight text-pretty">{file.title}</h2>
+          <h2 className="mt-1 font-display text-xl font-medium tracking-tight text-pretty">
+            {file.title}
+          </h2>
           <p className="mt-1 font-mono text-xs text-paper-muted">
             {file.repo} · {file.reproduction.command}
           </p>
@@ -39,7 +36,9 @@ export function CaseFileSheet({
             "shrink-0 rotate-[-8deg] border-2 px-2.5 py-1 font-mono text-[11px] font-medium tracking-[0.14em] whitespace-nowrap uppercase",
             file.status === "confirmed" && "border-ok text-ok",
             file.status === "does_not_reproduce" && "border-stamp text-stamp",
-            file.status === "exhausted" && "border-paper-muted text-paper-muted",
+            file.status === "exhausted" || file.status === "unverified"
+              ? "border-paper-muted text-paper-muted"
+              : null,
             file.status === "open" && "border-paper-ink/40 text-paper-ink",
           )}
         >
@@ -51,9 +50,16 @@ export function CaseFileSheet({
 
       <Section label="Reproduction">
         <p>
-          Outcome: <span className="font-medium">{file.reproduction.outcome.replaceAll("_", " ")}</span>
+          Outcome:{" "}
+          <span className="font-medium">{file.reproduction.outcome.replaceAll("_", " ")}</span>
           {" · "}
           {file.reproduction.durationMs} ms
+          {typeof file.reproduction.exitCode === "number"
+            ? ` · exit ${file.reproduction.exitCode}`
+            : ""}
+          {file.reproduction.runner && file.reproduction.runner !== "unknown"
+            ? ` · ${file.reproduction.runner}`
+            : ""}
         </p>
         {file.reproduction.stderr ? (
           <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-paper-ink/80">
@@ -76,6 +82,14 @@ export function CaseFileSheet({
                 </p>
                 <p>{c.hypothesis}</p>
                 <p className="text-sm text-paper-muted">{c.evidence}</p>
+                {c.predicted ? (
+                  <p className="font-mono text-[11px] text-paper-muted">
+                    oracle: predicted {c.predicted} → exit {c.checkExitCode ?? "?"}
+                    {typeof c.controlExitCode === "number"
+                      ? ` · control exit ${c.controlExitCode}`
+                      : ""}
+                  </p>
+                ) : null}
               </li>
             ))}
           </ol>
@@ -107,7 +121,9 @@ export function CaseFileSheet({
 function Section({ label, children }: { label: string; children: ReactNode }) {
   return (
     <section className="border-b border-paper-rule px-6 py-4 pl-8 last:border-b-0">
-      <h3 className="mb-2 font-mono text-[11px] tracking-[0.16em] text-paper-muted uppercase">{label}</h3>
+      <h3 className="mb-2 font-mono text-[11px] tracking-[0.16em] text-paper-muted uppercase">
+        {label}
+      </h3>
       <div className="text-sm leading-relaxed">{children}</div>
     </section>
   );

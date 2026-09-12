@@ -1,0 +1,5 @@
+{
+  "name": "node pointed at a script that is not there",
+  "cmd": "{node} gone.mjs",
+  "expect": { "outcome": "error", "candidates": 0 }
+}

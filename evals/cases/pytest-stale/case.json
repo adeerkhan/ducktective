@@ -1,0 +1,5 @@
+{
+  "name": "stale ticket: the reported symptom no longer occurs",
+  "cmd": "{py} -m pytest -q test_fixed.py",
+  "expect": { "outcome": "does_not_reproduce", "candidates": 0 }
+}

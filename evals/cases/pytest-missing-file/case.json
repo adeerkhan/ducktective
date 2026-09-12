@@ -1,0 +1,5 @@
+{
+  "name": "pytest pointed at a file that does not exist",
+  "cmd": "{py} -m pytest -q test_gone.py",
+  "expect": { "outcome": "error", "candidates": 0 }
+}

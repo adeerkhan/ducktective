@@ -1,0 +1,5 @@
+{
+  "name": "plain node script throwing inside an imported module",
+  "cmd": "{node} main.mjs",
+  "expect": { "outcome": "reproduced", "runner": "unknown", "firstFrameFile": "calc.mjs" }
+}

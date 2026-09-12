@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ducktective/schemas/case-file.json",
+  "title": "Ducktective case file",
+  "description": "The product. One JSON object per line in .ducktective/cases.jsonl, mirrored as Markdown for humans. Field names match skills/ducktective/SKILL.md — that file is the contract, this schema makes it checkable. Unknown keys are rejected: a misspelled field validates, then reads as undefined in the rap sheet.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "opened_at", "symptom", "reproduction", "candidates", "status", "confidence"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^DT-[A-Za-z0-9][A-Za-z0-9-]{0,31}$" },
+    "opened_at": { "type": "string" },
+    "symptom": { "type": "string" },
+    "reproduction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "outcome"],
+      "properties": {
+        "command": { "type": "string" },
+        "outcome": { "enum": ["reproduced", "does_not_reproduce", "error"] },
+        "duration_ms": { "type": "number" },
+        "exit_code": { "type": ["number", "null"] },
+        "stdout": { "type": "string" },
+        "stderr": { "type": "string" },
+        "stack": { "type": "array", "items": { "type": "string" } },
+        "covered": {
+          "description": "Line sites executed by the failing run; with --baseline, only the ones no passing run touched.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["file", "line"],
+            "properties": { "file": { "type": "string" }, "line": { "type": "number" } }
+          }
+        },
+        "runner": { "enum": ["pytest", "unittest", "node-test", "unknown"] }
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["location", "hypothesis", "check", "verdict"],
+        "properties": {
+          "rank": { "type": "number" },
+          "location": { "type": "string" },
+          "why": { "type": "string" },
+          "hypothesis": { "type": "string" },
+          "check": { "type": "string" },
+          "verdict": { "enum": ["pending", "falsified", "confirmed", "inconclusive"] },
+          "evidence": { "type": "string" },
+          "predicted": {
+            "description": "What the check must do if the hypothesis is TRUE. The oracle direction: the check should FAIL (crash, assert wrong) or PASS (behave correctly). run_check.mjs records this so the verdict is arithmetic, not prose.",
+            "enum": ["pass", "fail"]
+          },
+          "check_exit_code": {
+            "description": "Exit code of the executed check. null = killed or never started, which can support no verdict.",
+            "type": ["number", "null"]
+          },
+          "control": {
+            "description": "Known-good command that must pass for the check to be a valid oracle (SKILL.md rule 5)."
+          },
+          "control_exit_code": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "confirmed_cause": { "type": ["string", "null"] },
+    "leading_hypothesis": { "type": ["string", "null"] },
+    "confidence": { "enum": ["high", "medium", "low", "none"] },
+    "suggested_patch": { "type": ["string", "null"] },
+    "status": {
+      "description": "`open` exists so a mid-flight case can be persisted; SKILL.md forbids patching from it. A run that never executed is status `unverified` with the harness note in leading_hypothesis — `error` describes the reproduction, not the verdict.",
+      "enum": ["open", "confirmed", "does_not_reproduce", "exhausted", "unverified"]
+    },
+    "notes": { "type": "string" }
+  }
+}

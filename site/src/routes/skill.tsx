@@ -22,9 +22,9 @@ function SkillPage() {
         Drop it into the host you already run.
       </h1>
       <p className="mt-3 max-w-2xl text-sm leading-relaxed text-muted">
-        Agent Skills standard. One folder, one <span className="text-fg">SKILL.md</span>. Works in
-        Claude Code, Cursor, Copilot, Codex, Gemini CLI, and anything else that loads the spec.
-        Ducktective is not a runtime.
+        Agent Skills standard, with teeth: the file below is the contract, and the scripts beside it
+        are what stop a host agent from skipping it. Works in Claude Code, Cursor, Copilot, Codex,
+        Gemini CLI, and anything else that loads the spec. Ducktective is not a runtime.
       </p>
 
       <div className="mt-8 flex flex-wrap gap-3">
@@ -37,18 +37,18 @@ function SkillPage() {
       <ol className="mt-10 grid gap-3 sm:grid-cols-3">
         <Step
           n="1"
-          title="Make the folder"
-          body="~/.claude/skills/ducktective/ or .agents/skills/ducktective/ in the repo."
+          title="Install it"
+          body="node skills/ducktective/bin/install.mjs --target claude — or --dest for anything that reads a SKILL.md."
         />
         <Step
           n="2"
-          title="Paste SKILL.md"
-          body="The file below is the entire skill. Scripts come later; the contract is the file."
+          title="What lands"
+          body="One folder: the contract, the case-file schema, and four zero-dependency scripts that make the rules un-skippable."
         />
         <Step
           n="3"
           title="Invoke it"
-          body="“Ducktective, investigate this failing test.” The host is forced through the loop."
+          body="“Ducktective, investigate this failing test.” The gate runs the command before anything is allowed to think."
         />
       </ol>
 
