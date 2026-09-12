@@ -41,6 +41,8 @@ const USAGE = `usage: run_check.mjs --file DRAFT.json --candidate RANK|LOCATION 
   --cmd COMMAND        override the candidate's recorded check
   --control COMMAND    known-good command that must pass, or the check is no oracle (rule 5)
   --hypothesis TEXT    state the claim here if the draft does not carry one
+  --depth N            highest candidate rank this run may touch (default 2; 1 = never escalate)
+  --verify             re-execute a decided candidate's own check and report whether it survives
   --lang py|js|sh      how to run a multi-line check (default: sniff the shebang)
   --cwd DIR            where to run (default: the draft's directory)
   --timeout MS         kill the whole tree after this long (default: 60000)
@@ -58,7 +60,7 @@ function parseArgs(argv) {
     console.log(USAGE);
     return null;
   }
-  const bools = new Set(["--yes", "--rerun", "--keep", "--escalate"]);
+  const bools = new Set(["--yes", "--rerun", "--keep", "--escalate", "--verify"]);
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (!flag.startsWith("--")) throw new Error(`expected a --flag, got "${flag}"\n\n${USAGE}`);
@@ -88,6 +90,13 @@ function parseArgs(argv) {
       case "--control":
         opts.control = value;
         break;
+      case "--depth":
+        opts.depth = Number(value);
+        if (!Number.isInteger(opts.depth) || opts.depth < 1 || opts.depth > 5)
+          throw new Error(
+            `--depth wants a whole number 1-5 (1 = one candidate, never escalate), got "${value}"`,
+          );
+        break;
       case "--hypothesis":
         opts.hypothesis = value;
         break;
@@ -116,9 +125,15 @@ function parseArgs(argv) {
         throw new Error(`unrecognised flag: ${flag}\n\n${USAGE}`);
     }
   }
-  if (!opts.file || opts.candidate === undefined || !opts.predict) {
-    throw new Error(`--file, --candidate and --predict are all required\n\n${USAGE}`);
+  if (!opts.file || opts.candidate === undefined || (!opts.predict && !opts.verify)) {
+    throw new Error(
+      `--file and --candidate are required, plus --predict (or --verify, which reuses the recorded one)\n\n${USAGE}`,
+    );
   }
+  if (opts.verify && opts.predict)
+    throw new Error(
+      "--verify re-tests the recorded prediction; drop --predict so a second guess cannot move the answer",
+    );
   return opts;
 }
 
@@ -146,12 +161,20 @@ export function blockers(candidates, index, { escalate = false } = {}) {
     // "Hard" means an oracle ran and answered. `inconclusive` means it timed out,
     // could not start, or failed on the control too — a lead that was never
     // tested must not unlock the next one just to move on.
-    const unfinished = c.verdict === "pending" || (c.verdict === "inconclusive" && !escalate);
-    if (unfinished) {
+    if (c.verdict === "pending") {
       out.push(
-        c.verdict === "pending"
-          ? `candidate ${c.rank ?? i + 1} ("${c.location}") still has no verdict — one candidate hard before escalating`
-          : `candidate ${c.rank ?? i + 1} ("${c.location}") came back inconclusive — that check never answered anything; re-run it, or pass --escalate to move past it knowingly`,
+        `candidate ${c.rank ?? i + 1} ("${c.location}") still has no verdict — one candidate hard before escalating`,
+      );
+    } else if (c.verdict === "inconclusive" && !escalate) {
+      out.push(
+        `candidate ${c.rank ?? i + 1} ("${c.location}") came back inconclusive — that check never answered anything; re-run it, or pass --escalate to move past it knowingly`,
+      );
+    } else if (c.verdict === "confirmed" && !escalate) {
+      // Core Design step 3: "Confirmed → that is the root cause. Stop." Without
+      // this, the gate only prevented escalating too early and happily allowed
+      // testing on after the answer was already in the file.
+      out.push(
+        `candidate ${c.rank ?? i + 1} ("${c.location}") is a CONFIRMED cause — stop and write the case; --escalate only if you are deliberately chasing a second fault`,
       );
     }
   }
@@ -190,6 +213,32 @@ export function materialize(check, { lang, repo, caseId, rank }) {
   const file = join(repo, `ducktective-check-${caseId}-${rank ?? 0}.${EXT[use]}`);
   writeFileSync(file, check.endsWith("\n") ? check : check + "\n", "utf8");
   return { command: `${INTERPRETER[use]} "${file}"`, file };
+}
+
+/**
+ * One rule for the first run and for --verify, so a re-test cannot be graded on
+ * a different scale than the claim it is checking.
+ *
+ * @param {"pass"|"fail"} predicted what the check must do if the hypothesis is true
+ */
+export function classify(predicted, checkResult, controlResult, timeout = 0) {
+  const notes = [];
+  const inconclusive = (why) => {
+    notes.push(why);
+    return { verdict: "inconclusive", notes };
+  };
+  if (checkResult.timedOut)
+    return inconclusive(`the check hung and its process tree was killed after ${timeout} ms`);
+  if (wasNotRunnable(checkResult))
+    return inconclusive(
+      "the check command could not be run at all — that is not evidence about the hypothesis",
+    );
+  if (controlResult && controlResult.code !== 0)
+    return inconclusive(
+      "the control also failed, so this check does not distinguish the broken path from a known-good one (rule 5)",
+    );
+  const held = (predicted === "pass") === (checkResult.code === 0);
+  return { verdict: held ? "confirmed" : "falsified", notes };
 }
 
 function evidenceBlock(label, result, maxBytes) {
@@ -233,16 +282,22 @@ async function main() {
   };
 
   const reasons = [];
+  if (opts.verify && !(cand.predicted && typeof cand.check_exit_code === "number"))
+    reasons.push("nothing to verify — this candidate has no executed oracle to re-test");
   if (opts.hypothesis) cand.hypothesis = opts.hypothesis.trim();
   if (!(cand.hypothesis ?? "").trim())
     reasons.push(
       "no hypothesis — state what you think is wrong (in the draft or via --hypothesis) before testing it (rule 4)",
     );
-  if (cand.verdict !== "pending" && !opts.rerun)
+  if (cand.verdict !== "pending" && !opts.rerun && !opts.verify)
     reasons.push(`already has verdict "${cand.verdict}" — pass --rerun to run it again`);
   reasons.push(...blockers(draft.candidates ?? [], index, { escalate: !!opts.escalate }));
   if (draft.reproduction?.outcome !== "reproduced")
     reasons.push(`reproduction outcome is "${draft.reproduction?.outcome}" — the gate says stop`);
+  if ((cand.rank ?? index + 1) > (opts.depth ?? 2))
+    reasons.push(
+      `rank ${cand.rank ?? index + 1} is past --depth ${opts.depth ?? 2} — the speed control is one candidate hard before escalating; --depth 2 allows the next lead`,
+    );
   if (reasons.length) return refuse(reasons);
 
   const check = opts.cmd ?? cand.check;
@@ -261,7 +316,7 @@ async function main() {
 
   const cwd = opts.cwd ?? repo;
   console.error(
-    `[run_check] candidate ${cand.rank ?? index + 1} · predicted ${opts.predict} · cwd ${cwd}`,
+    `[run_check] candidate ${cand.rank ?? index + 1} · predicted ${opts.predict ?? cand.predicted} · cwd ${cwd}${opts.verify ? " · VERIFY" : ""}`,
   );
   console.error(`  check:   ${prepared.command}`);
   if (opts.control) console.error(`  control: ${opts.control}`);
@@ -282,25 +337,53 @@ async function main() {
     ? await run(opts.control, { cwd, timeout: opts.timeout, maxBytes: opts.maxBytes })
     : null;
 
-  let verdict;
-  const notes = [];
-  if (checkResult.timedOut) {
-    verdict = "inconclusive";
-    notes.push(`the check hung and its process tree was killed after ${opts.timeout} ms`);
-  } else if (wasNotRunnable(checkResult)) {
-    verdict = "inconclusive";
-    notes.push(
-      "the check command could not be run at all — that is not evidence about the hypothesis",
+  const { verdict, notes } = classify(
+    opts.predict ?? cand.predicted,
+    checkResult,
+    controlResult,
+    opts.timeout,
+  );
+
+  if (opts.verify) {
+    // Design-doc success metric #2 — "what fraction of final confirmed claims
+    // survive a second independent run?" — is unanswerable without a re-execution
+    // step. Same arithmetic as the first run and nothing here may edit the claim,
+    // only record whether it held. Honest limit: same machine, same working tree,
+    // fresh process. That catches a flaky oracle, not an environment-specific pass.
+    const survived = verdict === cand.verdict;
+    Object.assign(cand, { verified_exit_code: checkResult.code, verified_verdict: verdict });
+    cand.evidence = [
+      cand.evidence,
+      evidenceBlock("verify", checkResult, opts.maxBytes),
+      `verify verdict: ${verdict} (recorded: ${cand.verdict})`,
+      controlResult ? `verify control: exit ${controlResult.code}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    writeAtomic(draftPath, JSON.stringify(draft, null, 2) + "\n");
+    if (prepared.file && !opts.keep) rmSync(prepared.file, { force: true });
+    console.log(
+      JSON.stringify(
+        {
+          verified: true,
+          id: draft.id,
+          candidate: cand.rank ?? index + 1,
+          location: cand.location,
+          recorded_verdict: cand.verdict,
+          verify_verdict: verdict,
+          survived,
+          caveat:
+            "same machine and working tree, new process — a flaky-oracle test, not a portability test",
+          draft: draftPath,
+        },
+        null,
+        2,
+      ),
     );
-  } else if (controlResult && controlResult.code !== 0) {
-    verdict = "inconclusive";
-    notes.push(
-      "the control also failed, so this check does not distinguish the broken path from a known-good one (rule 5)",
-    );
-  } else {
-    const passed = checkResult.code === 0;
-    const held = (opts.predict === "pass") === passed;
-    verdict = held ? "confirmed" : "falsified";
+    // A claim that did not survive is a finding, not a success: non-zero so a
+    // loop cannot quietly ignore it.
+    process.exitCode = survived ? 0 : 2;
+    return;
   }
 
   const recorded = prepared.file

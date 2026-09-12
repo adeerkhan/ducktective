@@ -5,6 +5,8 @@ Two deliverables in one repo, deliberately separated:
 ```
 skills/ducktective/SKILL.md   the product: an Agent Skill (prompt contract)
 docs/                        design rationale + the literature critique
+.claude-plugin/                plugin + marketplace manifests, version pinned to package.json
+scripts/                     repo-level guards: layout, schema↔site, plugin manifests
 site/                        the marketing/demo website → GitHub Pages (static)
 scripts/                     repo-level checks
 ```

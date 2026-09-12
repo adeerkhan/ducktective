@@ -61,7 +61,15 @@
           "control": {
             "description": "Known-good command that must pass for the check to be a valid oracle (SKILL.md rule 5)."
           },
-          "control_exit_code": { "type": ["number", "null"] }
+          "control_exit_code": { "type": ["number", "null"] },
+          "verified_exit_code": {
+            "description": "Exit code of the re-executed check (run_check --verify).",
+            "type": ["number", "null"]
+          },
+          "verified_verdict": {
+            "description": "What the second run would have concluded. Metric #2: a confirmed claim whose verified_verdict differs did not survive.",
+            "enum": ["confirmed", "falsified", "inconclusive"]
+          }
         }
       }
     },

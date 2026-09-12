@@ -68,6 +68,10 @@ export function fromCaseFile(raw, source = "cases.jsonl") {
     checkExitCode: typeof c.check_exit_code === "number" ? c.check_exit_code : null,
     control: opt(c.control),
     controlExitCode: typeof c.control_exit_code === "number" ? c.control_exit_code : null,
+    verifiedVerdict: ["confirmed", "falsified", "inconclusive"].includes(c.verified_verdict)
+      ? c.verified_verdict
+      : undefined,
+    verifyExitCode: typeof c.verified_exit_code === "number" ? c.verified_exit_code : null,
   }));
 
   /** @type {CaseFile} */

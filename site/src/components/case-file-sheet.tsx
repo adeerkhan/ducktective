@@ -90,6 +90,19 @@ export function CaseFileSheet({ file, className }: { file: CaseFile; className?:
                       : ""}
                   </p>
                 ) : null}
+                {c.verifiedVerdict ? (
+                  <p
+                    className={
+                      "font-mono text-[11px] " +
+                      (c.verifiedVerdict === c.verdict ? "text-ok" : "text-stamp")
+                    }
+                  >
+                    second run: {c.verifiedVerdict}
+                    {typeof c.verifyExitCode === "number"
+                      ? ` (exit ${c.verifyExitCode})`
+                      : ""} · {c.verifiedVerdict === c.verdict ? "survived" : "did not survive"}
+                  </p>
+                ) : null}
               </li>
             ))}
           </ol>

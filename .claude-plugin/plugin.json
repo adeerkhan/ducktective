@@ -1,0 +1,13 @@
+{
+  "name": "ducktective",
+  "description": "Evidence before accusation: forces reproduction, an executable falsifying check, and a structured case file before any root-cause claim.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Adeer Khan"
+  },
+  "homepage": "https://adeerkhan.github.io/ducktective/",
+  "repository": "https://github.com/adeerkhan/ducktective",
+  "license": "MIT",
+  "keywords": ["debugging", "verification", "testing", "root-cause", "case-file", "agent-skills"],
+  "skills": "./skills"
+}

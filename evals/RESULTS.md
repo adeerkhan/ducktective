@@ -57,6 +57,26 @@ Refused to investigate (4): `pytest-missing-file`, `pytest-empty-suite`,
    empty. Each phase now starts from a clean data file, and the real signal shows
    up: `cart.py:7` — the branch only the failing test reaches.
 
+## Found by re-reading the design doc, not by the corpus
+
+The corpus measures the gate; it cannot tell you whether the gate is the one the
+plan asked for. Two gaps and one broken render surfaced from the doc itself:
+
+- **`Confirmed → stop` was unenforced** (Core Design step 3). `blockers()` only
+  looked backwards for unfinished leads, so after a confirmed cause the tool
+  happily tested on — escalation prevented, continuation not. Now a `confirmed`
+  candidate blocks the next one, same as an `inconclusive` one, with `--escalate`
+  as the deliberate override and `--depth 1` forbidding escalation outright
+  (which is why the candidate cap is called `--max-candidates`, not `--depth`).
+- **The doc rendered as two grey slabs.** Line 1 was a `​```markdown` fence pasted
+  out of a chat and line 182 closed it, so Purpose-through-metrics showed as
+  one code block. Deleted; the only fence left is the spine block.
+- **The README documented an install path Codex does not scan** (`~/.codex/skills`
+  instead of `~/.agents/skills`) because a silent string replacement missed it
+  after formatting reflowed the table. `scripts/plugin-manifests.test.mjs` now
+  fails if README and `install.mjs` disagree about a target — prose drift needs a
+  test like any other claim.
+
 ## Verified against real coverage.py, for the first time
 
 `coverage-failonly` produces `cov-baseline.json` (passing test) and

@@ -12,7 +12,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { materialize, pickCandidate, blockers } from "../scripts/run_check.mjs";
+import { blockers, materialize, pickCandidate } from "../scripts/run_check.mjs";
 import { SCHEMA, policyViolations, validateSchema } from "../scripts/lib/case-file.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -238,18 +238,27 @@ test("escalating past a pending candidate is refused", (t) => {
   assert.match(stderr, /one candidate hard/);
 });
 
-test("the next candidate opens once the first has a verdict", (t) => {
+test("a FALSIFIED lead opens the next one; a confirmed one closes the case", (t) => {
   const d = withDraft(t);
-  assert.equal(
-    tool(["--file", d.file, "--candidate", "1", "--predict", "fail", "--yes"], d.repo).code,
-    0,
-  );
-  const { code, out } = tool(
-    ["--file", d.file, "--candidate", "2", "--predict", "pass", "--yes"],
+  // candidate 1's check exits 0 while the hypothesis predicted failure → falsified
+  const first = tool(
+    [
+      "--file",
+      d.file,
+      "--candidate",
+      "1",
+      "--predict",
+      "fail",
+      "--cmd",
+      'node -e "process.exit(0)"',
+      "--yes",
+    ],
     d.repo,
   );
-  assert.equal(code, 0);
-  assert.equal(out.verdict, "confirmed");
+  assert.equal(first.out.verdict, "falsified");
+  const second = tool(["--file", d.file, "--candidate", "2", "--predict", "pass", "--yes"], d.repo);
+  assert.equal(second.code, 0, "demoting a wrong lead is not the same as finding the cause");
+  assert.equal(second.out.verdict, "confirmed");
 });
 
 test("--hypothesis states the claim in the same breath as the check", (t) => {
@@ -313,6 +322,42 @@ test("a draft with an unsafe id is refused before anything is written", (t) => {
     ["draft.json"],
     "refusal must leave the repo untouched",
   );
+});
+
+test("a confirmed cause stops the investigation — the doc's step 3 is 'Stop'", (t) => {
+  const d = withDraft(t);
+  assert.equal(
+    tool(["--file", d.file, "--candidate", "1", "--predict", "fail", "--yes"], d.repo).out.verdict,
+    "confirmed",
+  );
+  const after = tool(["--file", d.file, "--candidate", "2", "--predict", "pass", "--yes"], d.repo);
+  assert.equal(
+    after.code,
+    1,
+    "testing past a confirmed cause is the scattergun the design doc forbids",
+  );
+  assert.match(after.stderr, /CONFIRMED cause/);
+  assert.match(after.stderr, /--escalate/);
+  // The answer is in the file: it must be storable exactly as it stands.
+  const done = d.read();
+  assert.deepEqual(
+    [
+      ...validateSchema(done, SCHEMA),
+      ...policyViolations({
+        ...done,
+        status: "unverified",
+        leading_hypothesis: "x",
+        confirmed_cause: null,
+        confidence: "low",
+      }),
+    ].filter((x) => /CONFIRMED cause/.test(x)),
+    [],
+  );
+  const deliberate = tool(
+    ["--file", d.file, "--candidate", "2", "--predict", "pass", "--escalate", "--yes"],
+    d.repo,
+  );
+  assert.equal(deliberate.code, 0, "--escalate means a second fault is being chased on purpose");
 });
 
 test("an inconclusive check does not unlock the next candidate", (t) => {
@@ -471,6 +516,137 @@ test("a multi-line check with no language is refused, not guessed", (t) => {
 });
 
 // --- the unit pieces --------------------------------------------------------
+
+// --- --depth: the doc's speed control, L131 ---------------------------------
+
+test("--depth 1 forbids escalation entirely, even after a clean falsification", (t) => {
+  const d = withDraft(t);
+  tool(
+    [
+      "--file",
+      d.file,
+      "--candidate",
+      "1",
+      "--predict",
+      "fail",
+      "--cmd",
+      'node -e "process.exit(0)"',
+      "--yes",
+    ],
+    d.repo,
+  );
+  const blocked = tool(
+    ["--file", d.file, "--candidate", "2", "--predict", "pass", "--depth", "1", "--yes"],
+    d.repo,
+  );
+  assert.equal(blocked.code, 1);
+  assert.match(blocked.stderr, /past --depth 1/);
+  const allowed = tool(
+    ["--file", d.file, "--candidate", "2", "--predict", "pass", "--depth", "2", "--yes"],
+    d.repo,
+  );
+  assert.equal(allowed.code, 0);
+  assert.equal(
+    tool(
+      ["--file", d.file, "--candidate", "1", "--predict", "fail", "--depth", "0", "--yes"],
+      d.repo,
+    ).code,
+    2,
+    "--depth 0 is nonsense, not 'no candidates'",
+  );
+});
+
+// --- --verify: success metric #2, "survive a second independent run" --------
+
+test("--verify re-executes the recorded oracle and says whether the claim survived", (t) => {
+  const d = withDraft(t);
+  const first = tool(
+    [
+      "--file",
+      d.file,
+      "--candidate",
+      "1",
+      "--predict",
+      "fail",
+      "--cmd",
+      'node -e "process.exit(1)"',
+      "--yes",
+    ],
+    d.repo,
+  );
+  assert.equal(first.out.verdict, "confirmed");
+  const { code, out } = tool(["--file", d.file, "--candidate", "1", "--verify", "--yes"], d.repo);
+  assert.equal(code, 0, "a claim that survives is the good outcome");
+  assert.equal(out.survived, true);
+  assert.equal(out.verify_verdict, "confirmed");
+  assert.match(
+    out.caveat,
+    /same machine and working tree/,
+    "the limit of a second run here is stated, not glossed",
+  );
+  const cand = decided(d.read(), 1);
+  assert.equal(cand.verified_verdict, "confirmed");
+  assert.equal(cand.verified_exit_code, 1);
+  assert.deepEqual(
+    [
+      ...validateSchema(d.read(), SCHEMA),
+      ...policyViolations({
+        ...d.read(),
+        status: "confirmed",
+        confirmed_cause: "x",
+        confidence: "high",
+      }),
+    ],
+    [],
+  );
+});
+
+test("--verify catches a flaky oracle, and the case file cannot be filed anyway", (t) => {
+  const d = withDraft(t);
+  // exits 1 the first time it runs, 0 on every run after: a confounding second
+  // run is exactly what the metric is for
+  const flip =
+    "node -e \"const f=require('node:fs');const k='flip';const n=f.existsSync(k)?0:1;f.writeFileSync(k,'');process.exit(n)\"";
+  assert.equal(
+    tool(
+      ["--file", d.file, "--candidate", "1", "--predict", "fail", "--cmd", flip, "--yes"],
+      d.repo,
+    ).out.verdict,
+    "confirmed",
+  );
+  const { code, out } = tool(["--file", d.file, "--candidate", "1", "--verify", "--yes"], d.repo);
+  assert.equal(code, 2, "a claim that fell over is a finding, not a success");
+  assert.equal(out.survived, false);
+  assert.equal(out.verify_verdict, "falsified");
+  const stored = d.read();
+  const cand = decided(stored, 1);
+  assert.equal(
+    cand.verdict,
+    "confirmed",
+    "--verify must not rewrite the claim, only record the re-test",
+  );
+  const filed = {
+    ...stored,
+    status: "confirmed",
+    confirmed_cause: "one past the end",
+    confidence: "high",
+  };
+  assert.match(policyViolations(filed).join("\n"), /did not survive re-execution/);
+});
+
+test("--verify needs something to verify and never a fresh prediction", (t) => {
+  const d = withDraft(t);
+  const pending = tool(["--file", d.file, "--candidate", "1", "--verify", "--yes"], d.repo);
+  assert.equal(pending.code, 1);
+  assert.match(pending.stderr, /no executed oracle to re-test/);
+  tool(["--file", d.file, "--candidate", "1", "--predict", "fail", "--yes"], d.repo);
+  assert.equal(
+    tool(["--file", d.file, "--candidate", "1", "--verify", "--predict", "pass", "--yes"], d.repo)
+      .code,
+    2,
+    "a second guess cannot move the answer",
+  );
+});
 
 test("pickCandidate finds by rank or unique substring only", () => {
   const cs = DRAFT().candidates;

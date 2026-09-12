@@ -54,6 +54,9 @@ export type Candidate = {
   checkExitCode?: number | null;
   control?: string;
   controlExitCode?: number | null;
+  /** run_check --verify: the same oracle re-executed. Metric #2 in the design doc. */
+  verifiedVerdict?: "confirmed" | "falsified" | "inconclusive";
+  verifyExitCode?: number | null;
 };
 
 export type CaseFile = {

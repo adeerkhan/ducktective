@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "ducktective",
+  "description": "Verification discipline for coding agents: reproduce, falsify, and leave evidence.",
+  "owner": {
+    "name": "Adeer Khan",
+    "url": "https://github.com/adeerkhan"
+  },
+  "plugins": [
+    {
+      "name": "ducktective",
+      "source": "./",
+      "description": "Evidence before accusation: forces reproduction, an executable falsifying check, and a structured case file before any root-cause claim.",
+      "homepage": "https://adeerkhan.github.io/ducktective/",
+      "license": "MIT",
+      "keywords": [
+        "debugging",
+        "verification",
+        "testing",
+        "root-cause",
+        "case-file",
+        "agent-skills"
+      ]
+    }
+  ]
+}

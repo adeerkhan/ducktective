@@ -30,11 +30,20 @@ node skills/ducktective/bin/install.mjs --target claude
 | Target            | Installs to                                                                             |
 | ----------------- | --------------------------------------------------------------------------------------- |
 | `--target claude` | `~/.claude/skills/ducktective`                                                          |
-| `--target codex`  | `~/.codex/skills/ducktective`                                                           |
+| `--target codex`  | `~/.agents/skills/ducktective` — Codex scans `.agents/skills`, not `~/.codex`           |
 | `--target agents` | `.agents/skills/ducktective` in the current repo                                        |
 | `--dest <dir>`    | anywhere else — Cursor, Copilot, Gemini CLI, OpenClaw, anything that reads a `SKILL.md` |
 
 It copies `SKILL.md`, the case-file schema, and the four scripts — never the tests or the installer itself — and it **refuses to overwrite a skill file you have edited** (`--force` to mean it). `--dry-run` prints the plan; re-running an unchanged install writes nothing.
+
+Or as a Claude Code plugin, from this repo's own marketplace catalog:
+
+```text
+/plugin marketplace add adeerkhan/ducktective
+/plugin install ducktective@ducktective
+```
+
+The manifests live in `.claude-plugin/`. `scripts/plugin-manifests.test.mjs` pins their name and version to `package.json`, because nothing else validates them and a stale `plugin.json` fails on a stranger's machine.
 
 Manual install: copy `skills/ducktective/SKILL.md`, `case-file.schema.json` and `scripts/` into the skill folder. Take all three — a `SKILL.md` without its scripts is the rules as advice again.
 
@@ -91,12 +100,12 @@ Nothing executes until you pass `--yes`: the check is a model-written command in
 
 Zero dependencies, plain `node`, usable by any agent that can run a shell command.
 
-| Tool               | Job                                                                                                                                                                            | Exit codes                                                                     |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| `reproduce.mjs`    | The gate. Runs the command, parses the traceback, seeds candidates.                                                                                                            | `0` reproduced · `1` does not reproduce (**stop**) · `2` the command never ran |
-| `query_memory.mjs` | The rap sheet: nearest past cases by keyword overlap. No embeddings, no server.                                                                                                | `0` always (an empty store is a normal day) · `2` bad args                     |
-| `run_check.mjs`    | Executes the oracle and decides `confirmed`/`falsified` from `--predict` vs the real exit code. An `inconclusive` candidate does not unlock the next one without `--escalate`. | `0` recorded · `1` refused · `2` not evaluable · `3` dry run                   |
-| `write_case.mjs`   | The store, and the enforcement point.                                                                                                                                          | `0` stored · `1` refused · `2` bad input                                       |
+| Tool               | Job                                                                                                                                                                                                                                                                                             | Exit codes                                                                     |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `reproduce.mjs`    | The gate. Runs the command, parses the traceback, seeds candidates.                                                                                                                                                                                                                             | `0` reproduced · `1` does not reproduce (**stop**) · `2` the command never ran |
+| `query_memory.mjs` | The rap sheet: nearest past cases by keyword overlap. No embeddings, no server.                                                                                                                                                                                                                 | `0` always (an empty store is a normal day) · `2` bad args                     |
+| `run_check.mjs`    | Executes the oracle and decides `confirmed`/`falsified` from `--predict` vs the real exit code. Neither an `inconclusive` nor a `confirmed` lead unlocks the next one without `--escalate`; `--depth 1` forbids escalation; `--verify` re-runs a decided claim and records whether it survived. | `0` recorded · `1` refused · `2` not evaluable · `3` dry run                   |
+| `write_case.mjs`   | The store, and the enforcement point.                                                                                                                                                                                                                                                           | `0` stored · `1` refused · `2` bad input                                       |
 
 ### What `write_case.mjs` refuses
 
@@ -154,7 +163,9 @@ The JSONL is machine-readable on purpose: another skill can read the same file. 
 | Nearest-fault ranked above its caller                     | **6/6**   |
 | Cases behaving exactly as specified                       | **12/12** |
 
-Two numbers the corpus cannot produce — tokens per investigation versus a plain "fix this" prompt, and whether a human keeps opening the case files — need a host agent and a person, so they are open questions rather than claims.
+The doc's second question — what fraction of `confirmed` claims survive a second independent run — is now measured rather than hoped for: `run_check.mjs --file .ducktective/draft.json --candidate 1 --verify --yes` re-executes that candidate's own oracle, records `verified_verdict`, and exits non-zero if the claim fell over. `write_case.mjs` refuses to file a claim that did not survive. Stated in the tool's own output: same machine, same working tree, new process — it catches a flaky oracle, not an environment-specific pass.
+
+Two numbers still need a host agent and a person: tokens per investigation versus a plain "fix this" prompt, and whether anyone keeps opening the case files. Open questions, not claims.
 
 ---
 

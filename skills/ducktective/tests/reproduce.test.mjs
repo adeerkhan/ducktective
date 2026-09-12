@@ -10,6 +10,8 @@ import {
   detectRunner,
   parseAssertion,
   coverageHint,
+  baseName,
+  isAbsoluteLike,
   parseFrames,
   RUNNER_MISUSE,
   seedCandidates,
@@ -269,13 +271,41 @@ test("coverage is only suggested when the repo's own interpreter can collect it"
     "no coverage.py, no suggestion",
   );
 
-  // Windows venv paths use backslashes; a forward-slash-only split made the
-  // whole path the "basename", so the hint died silently on every Windows box.
+  // Windows venv paths use backslashes. Two bugs lived here: a forward-slash-only
+  // split made the whole path the "basename" (hint dead on Windows), and
+  // `path.basename` does not split on them at all (hint dead on Linux CI). The
+  // `?? ""` that used to sit on these calls turned a null into an empty string
+  // and made the failure message lie about what came back.
   const venv = String.raw`"C:\Users\dev\.venv-eval\Scripts\python.exe" -m pytest -q`;
-  assert.match(coverageHint(venv, "C:/repo", yes) ?? "", /coverage run -m pytest -q/);
+  assert.match(coverageHint(venv, "C:/repo", yes), /coverage run -m pytest -q/);
   assert.match(
-    coverageHint(String.raw`C:\repo\.venv\Scripts\python.exe -m pytest -q`, "C:/repo", yes) ?? "",
+    coverageHint(String.raw`C:\repo\.venv\Scripts\python.exe -m pytest -q`, "C:/repo", yes),
     /coverage/,
+  );
+});
+
+test("path classification gives the same answer on every OS", () => {
+  // Contributors run Windows, CI runs Linux, and a traceback may be written on
+  // one and read on the other. `isAbsolute("C:/app/x.py")` and `basename` both
+  // disagree across those, which flipped `inside` and killed the coverage hint.
+  for (const p of [
+    "C:/Users/dev/app.py",
+    "C:\\Users\\dev\\app.py",
+    "/srv/app.py",
+    "//server/share/a.py",
+  ]) {
+    assert.equal(isAbsoluteLike(p), true, `${p} must read as absolute on any host`);
+  }
+  for (const p of ["app.py", "src/app.py", "../up.py"]) {
+    assert.equal(isAbsoluteLike(p), false, `${p} must stay relative on any host`);
+  }
+  assert.equal(baseName(String.raw`C:\repo\.venv\Scripts\python.exe`), "python.exe");
+  assert.equal(baseName("/repo/.venv/bin/python3"), "python3");
+  assert.equal(baseName("app.py"), "app.py");
+  // The classification the CI failure was about, asserted directly this time.
+  assert.equal(
+    parseFrames('  File "C:/Python314/unittest/main.py", line 6, in main', "C:/proj")[0].inside,
+    false,
   );
 });
 

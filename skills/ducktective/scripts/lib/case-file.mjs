@@ -142,6 +142,14 @@ export function policyViolations(c) {
           );
         }
       }
+      // Metric #2 enforcement: --verify exists so a claim can be re-tested.
+      // Recording the second run and then filing the original verdict anyway is
+      // the confident wrong answer this skill exists to catch.
+      if (cand.verified_verdict != null && cand.verified_verdict !== cand.verdict) {
+        bad.push(
+          `candidate "${cand.location}": the second run said "${cand.verified_verdict}" — a claim that did not survive re-execution cannot be filed as "${cand.verdict}"`,
+        );
+      }
       // Rule 5: an oracle that fails on a known-good path discriminates nothing.
       if (
         cand.verdict === "confirmed" &&

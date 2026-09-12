@@ -21,7 +21,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { clip, newCaseId, SCHEMA, validateSchema } from "./lib/case-file.mjs";
 import { run, wasNotRunnable } from "./lib/exec.mjs";
@@ -168,8 +168,37 @@ function repoRelative(file, cwd) {
   return abs.slice(base.length + 1);
 }
 
+/**
+ * Path tests that give the same answer on every OS.
+ *
+ * `path.isAbsolute("C:/app/x.py")` is true on Windows and false on Linux, and
+ * `path.basename` only splits on the host's separator — so a traceback that
+ * crosses machines (a Windows path read in a container, WSL, or CI) was
+ * classified "inside the repo" on one runner and "dependency" on another. The
+ * gate then ranked a stdlib frame above the real fault, or lost the coverage hint
+ * entirely. Case files are meant to outlive the machine that wrote them.
+ */
+/**
+ * The backslash, built from its code point so this file has no escape to mangle.
+ * Note the doubling: in a character class `[\/]` is just `/` — an escaped
+ * slash, not a backslash — so the class needs two of them to match one.
+ */
+const BS = String.fromCharCode(92);
+const SEPS = new RegExp(`[${BS}${BS}/]+`);
+const DRIVE_ABSOLUTE = new RegExp(`^[A-Za-z]:[${BS}${BS}/]`);
+const UNC_PREFIX = BS + BS;
+
+export function baseName(p) {
+  const parts = (p ?? "").split(SEPS).filter(Boolean);
+  return parts.at(-1) ?? p ?? "";
+}
+
+export function isAbsoluteLike(p) {
+  return DRIVE_ABSOLUTE.test(p) || p.startsWith("/") || p.startsWith(UNC_PREFIX);
+}
+
 function frame(file, line, fn, raw) {
-  return { file, line, fn, raw, inside: !isAbsolute(file) && !file.startsWith("../") };
+  return { file, line, fn, raw, inside: !isAbsoluteLike(file) && !file.startsWith("../") };
 }
 
 function v8FnName(raw) {
@@ -245,7 +274,7 @@ export function coveredSites(failing, passing, cap = 40) {
     const lines = data?.executed_lines ?? data?.lines ?? [];
     const hitByPass = new Set(base[file]?.executed_lines ?? base[file]?.lines ?? []);
     for (const line of passing ? lines.filter((l) => !hitByPass.has(l)) : lines) {
-      sites.push({ file: toPosix(file), line, inside: !isAbsolute(toPosix(file)) });
+      sites.push({ file: toPosix(file), line, inside: !isAbsoluteLike(toPosix(file)) });
       if (sites.length >= cap) return sites;
     }
   }
@@ -284,7 +313,7 @@ function interpreterOf(command) {
   // Both separators: a Windows venv path is `C:\...\Scripts\python.exe`, and
   // splitting only on `/` left the whole string as the "basename", so the
   // interpreter test failed and the hint silently never fired on Windows.
-  const base = basename(token).replace(/\.exe$/i, "");
+  const base = baseName(token).replace(/\.exe$/i, "");
   return INTERPRETER.test(base) ? token : null;
 }
 
