@@ -582,3 +582,39 @@ test("an update preserves a line the store could not parse", () => {
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+test("the documented spine works without an explicit --cwd", () => {
+  // SKILL.md L33 runs reproduce.mjs with no --cwd at all. When the default was the
+  // literal ".", frames printed as absolute paths (node's file:// URLs, Python 3.13+
+  // tracebacks) never matched it, so every frame read as "outside the repo" and a real
+  // reproduction came back as `error` with no candidates. The eval harness always
+  // passed --cwd, which is why 14/14 stayed green over it.
+  const repo = mkdtempSync(join(tmpdir(), "dt-nocwd-"));
+  const out = join(repo, "draft.json");
+  writeFileSync(
+    join(repo, "bad.test.mjs"),
+    [
+      'import { test } from "node:test";',
+      'import assert from "node:assert/strict";',
+      'test("sums every row", () => assert.equal([1, 2, 3].reduce((a, b) => a + b, 0), 7));',
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const { code, draft } = harness(
+    ["--cmd", "node bad.test.mjs", "--symptom", "drop", "--out", out],
+    repo,
+  );
+  try {
+    assert.equal(code, 0, "an in-repo node failure must reproduce, not error");
+    assert.equal(draft.reproduction.outcome, "reproduced");
+    assert.ok(draft.candidates.length > 0, "the gate must seed at least one lead");
+    assert.equal(
+      draft.candidates[0].location.split(":")[0],
+      "bad.test.mjs",
+      "locations stay repo-relative so they grep",
+    );
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});

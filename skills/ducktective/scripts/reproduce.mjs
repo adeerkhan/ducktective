@@ -21,8 +21,8 @@
  */
 import { numFlag } from "./lib/args.mjs";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { clip, newCaseId, SCHEMA, validateSchema } from "./lib/case-file.mjs";
 import { run, wasNotRunnable } from "./lib/exec.mjs";
@@ -72,7 +72,7 @@ export const RUNNER_MISUSE =
   /no tests ran|no tests were collected|empty test suite|unrecognized arguments|usage: |not found: |file or directory not found|cannot import name|cannot find module|moduleNotFoundError|importerror|error: (?:not found|no such)|interrupted:/i;
 
 function parseArgs(argv) {
-  const opts = { cwd: ".", timeout: 120_000, maxBytes: 4000, maxCandidates: 5 };
+  const opts = { cwd: process.cwd(), timeout: 120_000, maxBytes: 4000, maxCandidates: 5 };
   if (argv.includes("--help") || argv.includes("-h")) {
     console.log(USAGE);
     process.exitCode = 0;
@@ -505,7 +505,14 @@ async function main() {
   if (shape.length) console.error(`[ducktective] draft violates the schema: ${shape.join("; ")}`);
 
   const body = JSON.stringify(draft, null, 2);
-  if (opts.out) writeFileSync(opts.out, body + "\n", "utf8");
+  if (opts.out) {
+    // The documented example writes `.ducktective/draft.json`, and on the first
+    // investigation in a repo that folder does not exist yet. Failing here threw away
+    // a reproduction that had already run: the gate proved the bug, then exited 2 as an
+    // error, so the happy path on a fresh repo looked exactly like a broken one.
+    mkdirSync(dirname(resolve(opts.out)), { recursive: true });
+    writeFileSync(opts.out, body + "\n", "utf8");
+  }
   console.log(body);
   // exitCode, never process.exit(): stdout to a pipe is asynchronous, and
   // exiting the tick early can drop the JSON the agent is about to read.

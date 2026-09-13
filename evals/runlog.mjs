@@ -44,6 +44,8 @@ const FIELDS = [
   "stop_correct", // derived: did the gate refuse what it should refuse?
   "first_falsification_hit", // rank of the confirmed candidate, "" if none
   "survived_verify", // yes | no | not-run (M3)
+  "duck_claim_right", // was the root cause actually right? yes|no|none (M8, human-judged)
+  "plain_claim_right", // the same judgement of the bare "fix this" run (M9); none = no claim
   "decision_changed", // did the case file change what was done next (M4, the §9 claim)
   "human_opened", // did anyone open it at all (M4n) — attention, not usefulness
   "memory_changed_search", // yes | no | n/a (M5) — needs the paired run, design §8.4
@@ -55,6 +57,16 @@ const FIELDS = [
 
 const YES_NO = ["yes", "no"];
 const YES_NO_NA = ["yes", "no", "n/a"];
+/**
+ * §9's headline is a comparison — "fewer confident wrong root-cause claims than the
+ * unconstrained agent" — and a ledger that records only cost cannot answer it. Both
+ * sides need a verdict. `none` is a first-class answer and not a failure: a run that
+ * refuses to name a cause filed no confident wrong claim, which is the behaviour the
+ * whole skill exists to produce, so it must count in the denominator and not in the
+ * numerator. Blank means nobody judged it, which is a different fact again.
+ */
+const CLAIM = ["yes", "no", "none"];
+const CLAIM_OR_NOT_RUN = [...CLAIM, "not-run"];
 const PROVENANCE = ["real", "constructed"];
 
 function fail(msg) {
@@ -142,10 +154,17 @@ function record(opts) {
   const opened = oneOf("--opened", opts.opened, YES_NO);
   const changed = oneOf("--changed-decision", opts["changed-decision"], YES_NO);
   const memory = oneOf("--memory-changed", opts["memory-changed"], YES_NO_NA);
+  const duckClaim = oneOf("--duck-claim", opts["duck-claim"], CLAIM);
+  const plainClaim = oneOf("--plain-claim", opts["plain-claim"], CLAIM_OR_NOT_RUN);
   const wall = number("--wall-clock", opts["wall-clock"], { min: 0, integer: false });
   const tp = number("--tokens-plain", opts["tokens-plain"]);
   const td = number("--tokens-duck", opts["tokens-duck"]);
-  if ([provenance, opened, changed, memory, wall, tp, td].some((v) => v === null)) return;
+  if (
+    [provenance, opened, changed, memory, duckClaim, plainClaim, wall, tp, td].some(
+      (v) => v === null,
+    )
+  )
+    return;
 
   let c;
   try {
@@ -161,6 +180,8 @@ function record(opts) {
     human_opened: opened,
     decision_changed: changed,
     memory_changed_search: memory,
+    duck_claim_right: duckClaim,
+    plain_claim_right: plainClaim,
     tokens_plain: tp,
     tokens_duck: td,
     wall_clock_min: wall,
@@ -207,6 +228,16 @@ function summarise(g) {
   const decisions = answered("decision_changed");
   const opened = answered("human_opened");
   const mem = answered("memory_changed_search", (v) => ["yes", "no"].includes(v));
+  // A side "ran" when somebody judged its conclusion — including the judgement that it
+  // made no claim, which is a win and not a miss. `not-run` (no baseline performed) and
+  // blank (nobody judged) sit outside the denominator: scoring a bug you never ran as a
+  // bare-agent success is precisely how this comparison would flatter the tool.
+  const claimShare = (f) => {
+    const judged = g.filter((r) => CLAIM.includes(r[f]));
+    return { wrong: judged.filter((r) => r[f] === "no").length, judged: judged.length };
+  };
+  const duck = claimShare("duck_claim_right");
+  const plain = claimShare("plain_claim_right");
   const tp = g.map((r) => r.tokens_plain).filter(Number.isFinite);
   const td = g.map((r) => r.tokens_duck).filter(Number.isFinite);
   const wall = g.map((r) => r.wall_clock_min).filter(Number.isFinite);
@@ -236,6 +267,14 @@ function summarise(g) {
       "wall-clock per investigation",
       `${wall.length ? `${mean(wall).toFixed(1)} min mean` : "no data"}  [${wall.length}/${g.length}]`,
     ),
+    // Last, because §9 reads them as a pair: two numbers and the count of bugs where
+    // both sides actually ran. A comparison over one-sided rows is not a comparison.
+    row("M8", "confident-wrong root cause: Ducktective", duck.wrong, duck.judged),
+    line(
+      "M9",
+      'confident-wrong root cause: bare "fix this"',
+      `${plain.judged ? `${pct(plain.wrong, plain.judged)}  [${plain.wrong}/${plain.judged}]` : "no data"}  paired: ${g.filter((r) => CLAIM.includes(r.duck_claim_right) && CLAIM.includes(r.plain_claim_right)).length}`,
+    ),
   ];
 }
 
@@ -254,7 +293,11 @@ function report() {
     console.log(summarise(g).join("\n"));
     console.log("");
   }
-  console.log("  M4, not M4n, is what design \u00a79 rests on: opening a file is self-gameable.");
+  console.log(
+    "  M4, not M4n, is what design \u00a79 rests on: opening a file is self-gameable.\n" +
+      "  M8 vs M9 is the other half of \u00a79, and it is only a comparison across paired\n" +
+      "      rows: one-sided numbers tell you about one run, not about the bare agent.",
+  );
   if (!real.length)
     console.log(
       "\n  \u26a0 ZERO real rows. Nothing here measures the product; it measures fixtures.\n" +
@@ -272,7 +315,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
       console.log(
         "usage:\n  node evals/runlog.mjs [--log PATH] --record --case draft.json --repo PATH \\\n" +
           "    [--provenance real|constructed] [--tokens-plain N --tokens-duck N --wall-clock N] \\\n" +
-          "    [--opened yes|no] [--changed-decision yes|no] [--memory-changed yes|no|n/a]\n" +
+          "    [--opened yes|no] [--changed-decision yes|no] [--memory-changed yes|no|n/a] \\\n" +
+          "    [--duck-claim yes|no|none] [--plain-claim yes|no|none|not-run]\n" +
           "  node evals/runlog.mjs [--log PATH] --report",
       );
   }

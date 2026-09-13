@@ -148,6 +148,8 @@ test("a flag with an unrecognised value is refused and records nothing", (t) => 
     ["--changed-decision", "maybe"],
     ["--opened", "sometimes"],
     ["--memory-changed", "perhaps"],
+    ["--duck-claim", "maybe"],
+    ["--plain-claim", "sometimes"],
     ["--provenance", "real-ish"],
   ]) {
     const r = rec(dir, log, `x${flag}.json`, draft("DT-260101-eeee05", "does_not_reproduce"), [
@@ -160,6 +162,56 @@ test("a flag with an unrecognised value is refused and records nothing", (t) => 
     assert.match(r.stderr, new RegExp(`${flag} must be one of`));
     assert.ok(!exists(log), "a refused record must not append a row");
   }
+});
+
+test("a refused claim counts as a win, and an unrun baseline as no data", (t) => {
+  const { dir, log } = sandbox(t);
+  const conf = [
+    {
+      rank: 1,
+      location: "app.py:7 total()",
+      hypothesis: "h",
+      check: "c",
+      verdict: "confirmed",
+      evidence: "e",
+      predicted: "fail",
+      check_exit_code: 1,
+    },
+  ];
+  // Ducktective named the cause and was right; the bare agent named one and was wrong.
+  rec(dir, log, "a.json", draft("DT-260101-gg0707", "reproduced", conf), [
+    "--duck-claim",
+    "yes",
+    "--plain-claim",
+    "no",
+  ]);
+  // Ducktective abstained, and there was never a bare run to compare against.
+  rec(dir, log, "b.json", draft("DT-260101-hh0808", "does_not_reproduce"), [
+    "--duck-claim",
+    "none",
+    "--plain-claim",
+    "not-run",
+  ]);
+  // Nobody judged anything.
+  rec(dir, log, "c.json", draft("DT-260101-ii0909", "reproduced", conf));
+  assert.deepEqual(
+    rowsOf(log).map((r) => [r.duck_claim_right, r.plain_claim_right]),
+    [
+      ["yes", "no"],
+      ["none", "not-run"],
+      ["", ""],
+    ],
+  );
+  const rep = run(["--log", log, "--report"]);
+  // M8's denominator is 2: `none` is a run that made no confident claim, which is the
+  // behaviour the skill exists to produce, so it is neither a wrong answer nor absent.
+  assert.match(rep.stdout, /M8\. confident-wrong root cause: Ducktective\s+0%\s+\[0\/2\]/);
+  // M9's is 1, because `not-run` and blank are not evidence about the bare agent; and
+  // only one bug has both sides judged, which is what `paired` exists to say.
+  assert.match(
+    rep.stdout,
+    /M9\. confident-wrong root cause: bare "fix this"\s+100%\s+\[1\/1\]\s+paired: 1/,
+  );
 });
 
 test("host-reported numbers must be numbers, not strings in disguise", (t) => {
