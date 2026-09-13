@@ -8,7 +8,8 @@
  *   node evals/runlog.mjs --report
  *
  * Why a file and not a conversation: the metrics that decide this project
- * (`ref-work.md` §8 — "does anyone open the case file"; design §8.3) are counts,
+ * (`ref-work.md` §8 — "does anyone open the case file"; design §8.3, where M1–M7 are
+ * defined) are counts,
  * and counts need one row per case with that row's provenance attached. Without
  * a `real` vs `constructed` field, the ledger quietly launders my own fixtures
  * into evidence, which is the exact failure §8 warns about: "measure on repos you
@@ -42,10 +43,10 @@ const FIELDS = [
   "outcome", // reproduced | does_not_reproduce | error
   "stop_correct", // derived: did the gate refuse what it should refuse?
   "first_falsification_hit", // rank of the confirmed candidate, "" if none
-  "survived_verify", // yes | no | not-run (design §8.3 metric 2)
-  "decision_changed", // did the case file change what was done next (the §9 claim)
-  "human_opened", // did anyone open it at all — attention, not usefulness
-  "memory_changed_search", // yes | no | n/a — needs two compared runs
+  "survived_verify", // yes | no | not-run (M3)
+  "decision_changed", // did the case file change what was done next (M4, the §9 claim)
+  "human_opened", // did anyone open it at all (M4n) — attention, not usefulness
+  "memory_changed_search", // yes | no | n/a (M5) — needs the paired run, design §8.4
   "tokens_plain", // host-reported
   "tokens_duck", // host-reported
   "wall_clock_min", // host-reported
@@ -103,7 +104,7 @@ function fromCase(c) {
     case_id: c?.id ?? "",
     outcome,
     // A case that did not reproduce (or never ran) may not have filed anything.
-    // A reproduced case is not judged here — the verdict quality is metric 2.
+    // A reproduced case is not judged here — that is what M2/M3 are for.
     stop_correct: outcome === "reproduced" ? "" : candidates.length === 0 ? "yes" : "no",
     first_falsification_hit: confirmed
       ? String(confirmed.rank ?? candidates.indexOf(confirmed) + 1)
@@ -194,7 +195,14 @@ function summarise(g) {
   const yes = (f) => answered(f, (v) => v === "yes").length;
   const stops = answered("outcome", (v) => v === "does_not_reproduce" || v === "error");
   const repro = answered("outcome", (v) => v === "reproduced");
-  const firstHit = repro.filter((r) => r.first_falsification_hit === "1").length;
+  const ranks = repro
+    .map((r) => Number(r.first_falsification_hit))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  const firstHit = ranks.filter((n) => n === 1).length;
+  // §9's continue-branch threshold is "first or second candidate", so the rank<=2
+  // share is printed next to the rank-1 share: a metric that measures a slightly
+  // different sentence than the one the decision cites gets ignored quietly.
+  const withinTwo = ranks.filter((n) => n <= 2).length;
   const retested = answered("survived_verify", (v) => v && v !== "not-run");
   const decisions = answered("decision_changed");
   const opened = answered("human_opened");
@@ -202,21 +210,32 @@ function summarise(g) {
   const tp = g.map((r) => r.tokens_plain).filter(Number.isFinite);
   const td = g.map((r) => r.tokens_duck).filter(Number.isFinite);
   const wall = g.map((r) => r.wall_clock_min).filter(Number.isFinite);
-  const row = (n, label, num, den) => {
-    const value = den ? `${pct(num, den)}  [${num}/${den}]` : "no data";
-    return `  ${String(n).padStart(2)}. ${label.padEnd(44)} ${value}`;
-  };
+  const line = (id, label, value) => `  ${id.padStart(3)}. ${label.padEnd(44)} ${value}`;
+  const row = (id, label, num, den) =>
+    line(id, label, den ? `${pct(num, den)}  [${num}/${den}]` : "no data");
   return [
-    row(1, "stopped correctly (stale + broken)", yes("stop_correct"), stops.length),
-    row(2, "confirmed on the FIRST candidate", firstHit, repro.length),
-    row(3, "claim survived --verify", yes("survived_verify"), retested.length),
-    row(4, "case file CHANGED a decision", yes("decision_changed"), decisions.length),
-    row("4n", "case file merely opened (attention)", yes("human_opened"), opened.length),
-    row(5, "memory changed what was tried", yes("memory_changed_search"), mem.length),
-    `   6. ${'tokens: bare "fix this" vs Ducktective'.padEnd(44)} ${
-      tp.length && tp.length === td.length ? `${(mean(tp) / mean(td)).toFixed(2)}\u00d7` : "no data"
-    }  [${Math.min(tp.length, td.length)}/${g.length}]`,
-    `   7. ${"wall-clock per investigation".padEnd(44)} ${wall.length ? `${mean(wall).toFixed(1)} min mean` : "no data"}  [${wall.length}/${g.length}]`,
+    row("M1", "stopped correctly (stale + broken)", yes("stop_correct"), stops.length),
+    line(
+      "M2",
+      "confirmed on the FIRST candidate",
+      repro.length
+        ? `${pct(firstHit, repro.length)}  [${firstHit}/${repro.length}]  rank≤2: ${withinTwo}`
+        : "no data",
+    ),
+    row("M3", "claim survived --verify", yes("survived_verify"), retested.length),
+    row("M4", "case file CHANGED a decision", yes("decision_changed"), decisions.length),
+    row("M4n", "case file merely opened (attention)", yes("human_opened"), opened.length),
+    row("M5", "memory changed what was tried", yes("memory_changed_search"), mem.length),
+    line(
+      "M6",
+      'tokens: bare "fix this" vs Ducktective',
+      `${tp.length && tp.length === td.length ? `${(mean(tp) / mean(td)).toFixed(2)}\u00d7` : "no data"}  [${Math.min(tp.length, td.length)}/${g.length}]`,
+    ),
+    line(
+      "M7",
+      "wall-clock per investigation",
+      `${wall.length ? `${mean(wall).toFixed(1)} min mean` : "no data"}  [${wall.length}/${g.length}]`,
+    ),
   ];
 }
 
@@ -235,9 +254,7 @@ function report() {
     console.log(summarise(g).join("\n"));
     console.log("");
   }
-  console.log(
-    "  Metric 4, not 4n, is what design \u00a79 rests on: opening a file is self-gameable.",
-  );
+  console.log("  M4, not M4n, is what design \u00a79 rests on: opening a file is self-gameable.");
   if (!real.length)
     console.log(
       "\n  \u26a0 ZERO real rows. Nothing here measures the product; it measures fixtures.\n" +

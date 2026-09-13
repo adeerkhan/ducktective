@@ -10,7 +10,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,6 +57,20 @@ test("the site imports SKILL.md instead of embedding a copy", () => {
  * only way documents rot in practice.
  */
 test("docs/architecture.md stays a true reference", () => {
+  // A file on disk is not a file in the repo. This test reads the reference, so a
+  // stray ignore rule (a bare `docs/` has been appended to .gitignore twice now)
+  // passes locally, where the file exists, and fails only on a clean checkout —
+  // which is the worst possible place to discover it. Ask git, not the filesystem.
+  if (existsSync(join(ROOT, ".git"))) {
+    const tracked = execFileSync("git", ["ls-files", "--", "docs/architecture.md"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    }).trim();
+    assert.ok(
+      tracked,
+      "docs/architecture.md is untracked — an ignore rule is hiding the reference this test reads",
+    );
+  }
   const doc = readFileSync(join(ROOT, "docs", "architecture.md"), "utf8");
   const scriptsDir = join(ROOT, "skills", "ducktective", "scripts");
   for (const entry of readdirSync(scriptsDir, { withFileTypes: true })) {

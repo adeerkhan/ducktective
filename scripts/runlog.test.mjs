@@ -110,8 +110,34 @@ test("first-candidate and verify survival come from the verdicts", (t) => {
   assert.equal(rows[0].survived_verify, "not-run", "no --verify yet is not a failure");
   assert.equal(rows[1].survived_verify, "no", "the second run said falsified");
   const rep = run(["--log", log, "--report"]);
-  assert.match(rep.stdout, /2\. confirmed on the FIRST candidate\s+100%\s+\[2\/2\]/);
-  assert.match(rep.stdout, /3\. claim survived --verify\s+0%\s+\[0\/1\]/);
+  assert.match(
+    rep.stdout,
+    /M2\. confirmed on the FIRST candidate\s+100%\s+\[2\/2\]\s+rank\u22642: 2/,
+  );
+  assert.match(rep.stdout, /M3\. claim survived --verify\s+0%\s+\[0\/1\]/);
+});
+
+test("design §9 counts first OR second, so the report prints both shares", (t) => {
+  const { dir, log } = sandbox(t);
+  const second = {
+    rank: 2,
+    location: "app.py:7 total()",
+    hypothesis: "h",
+    check: "c",
+    verdict: "confirmed",
+    evidence: "e",
+    predicted: "fail",
+    check_exit_code: 1,
+  };
+  rec(dir, log, "second.json", draft("DT-260101-ffff06", "reproduced", [second]));
+  const rep = run(["--log", log, "--report"]);
+  assert.equal(rep.status, 0, rep.stderr);
+  // Rank 2 is not a first-candidate hit and is still a §9 success: reading only the
+  // percentage would say the loop missed, reading only the tail would say it never did.
+  assert.match(
+    rep.stdout,
+    /M2\. confirmed on the FIRST candidate\s+0%\s+\[0\/1\]\s+rank\u22642: 1/,
+  );
 });
 
 // --- the blank-is-not-"no" rule --------------------------------------------
@@ -165,10 +191,10 @@ test("host-reported numbers must be numbers, not strings in disguise", (t) => {
   assert.equal(row.decision_changed, "yes");
   assert.equal(row.memory_changed_search, "n/a", "n/a is a real answer, distinct from blank");
   const rep = run(["--log", log, "--report"]);
-  assert.match(rep.stdout, /4\. case file CHANGED a decision\s+100%\s+\[1\/1\]/);
-  assert.match(rep.stdout, /4n\. case file merely opened \(attention\)\s+100%\s+\[1\/1\]/);
-  assert.match(rep.stdout, /7\. wall-clock per investigation\s+9\.5 min mean/);
-  assert.match(rep.stdout, /6\. tokens: bare "fix this" vs Ducktective\s+2\.80×/);
+  assert.match(rep.stdout, /M4\. case file CHANGED a decision\s+100%\s+\[1\/1\]/);
+  assert.match(rep.stdout, /M4n\. case file merely opened \(attention\)\s+100%\s+\[1\/1\]/);
+  assert.match(rep.stdout, /M7\. wall-clock per investigation\s+9\.5 min mean/);
+  assert.match(rep.stdout, /M6\. tokens: bare "fix this" vs Ducktective\s+2\.80×/);
 });
 
 // --- provenance and integrity -----------------------------------------------
@@ -188,7 +214,7 @@ test("constructed fixtures never share a denominator with real rows", (t) => {
   assert.match(rep.stdout, /\[all rows: 2\][\s\S]*\[real rows only: 1\]/, "both blocks must print");
   assert.match(
     rep.stdout.slice(rep.stdout.indexOf("real rows only")),
-    /1\. stopped correctly[^\n]*100%\s+\[1\/1\]/,
+    /M1\. stopped correctly[^\n]*100%\s+\[1\/1\]/,
   );
 });
 
@@ -217,7 +243,7 @@ test("--csv is gone and says so", () => {
 test("the real pilot ledger parses and reports, and every unmeasured metric says no data", () => {
   const rep = run(["--report"]);
   assert.equal(rep.status, 0, rep.stderr);
-  const lines = rep.stdout.split("\n").filter((l) => /^\s+\d+n?\./.test(l));
+  const lines = rep.stdout.split("\n").filter((l) => /^\s+M\d+n?\./.test(l));
   // One block per group; the pilot ledger is all-real, so a second block would
   // repeat the same seven numbers and read as twice the evidence.
   assert.ok(lines.length >= 7, `expected the seven metrics, got ${lines.length}`);
