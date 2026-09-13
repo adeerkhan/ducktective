@@ -399,11 +399,12 @@ export function getFixture(id: string): Fixture | undefined {
 }
 
 export function sitesFromCoverage(file: string, cov: CoverageMap): CoveredSite[] {
+  // Fail/pass counts live in `label` now: nothing in the UI or the engine ever
+  // read them as fields, and a type carrying only what its constructor fills is
+  // how a view model accretes a fake schema.
   return Object.entries(cov).map(([id, hits]) => ({
     id,
     file,
-    label: id,
-    failHits: hits.fail,
-    passHits: hits.pass,
+    label: `${id} · ${hits.fail} failing / ${hits.pass} passing`,
   }));
 }

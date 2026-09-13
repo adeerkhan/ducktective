@@ -1,23 +1,22 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { SiteShell } from "@/components/site-shell";
 import { CaseFileSheet } from "@/components/case-file-sheet";
 import { Button } from "@/components/ui/button";
-import { clearRapSheet } from "@/lib/engine/memory";
+import { clearRapSheet, loadRapSheet } from "@/lib/engine/memory";
 import { parseCasesJsonl } from "@/lib/engine/case-import.mjs";
-import { useDuck } from "@/lib/store";
 import type { CaseFile } from "@/lib/engine/types";
 
 export const Route = createFileRoute("/cases")({ component: Cases });
 
 function Cases() {
-  const { sheet, hydrate } = useDuck();
+  // The sheet is this browser's own rap sheet (lib/engine/memory.ts). `imported`
+  // wins over it, because the point of the file picker is to read a store this
+  // browser has never seen. Clearing has to write both halves — storage and the
+  // copy being shown — or the page keeps rendering cases it just deleted.
+  const [sheet, setSheet] = useState<CaseFile[]>(loadRapSheet);
   const [imported, setImported] = useState<CaseFile[] | null>(null);
   const [errors, setErrors] = useState<string[]>([]);
-
-  useEffect(() => {
-    hydrate();
-  }, [hydrate]);
 
   const shown = imported ?? sheet;
 
@@ -69,7 +68,7 @@ function Cases() {
               variant="ghost"
               onClick={() => {
                 clearRapSheet();
-                hydrate();
+                setSheet([]);
               }}
             >
               Clear sheet

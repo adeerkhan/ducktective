@@ -30,6 +30,7 @@
  * `cmd.exe`, and a mangled `--control` will honestly come back `inconclusive`
  * rather than pretend to be an oracle.
  */
+import { numFlag } from "./lib/args.mjs";
 import { existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -91,11 +92,12 @@ function parseArgs(argv) {
         opts.control = value;
         break;
       case "--depth":
-        opts.depth = Number(value);
-        if (!Number.isInteger(opts.depth) || opts.depth < 1 || opts.depth > 5)
-          throw new Error(
-            `--depth wants a whole number 1-5 (1 = one candidate, never escalate), got "${value}"`,
-          );
+        // 1 = one candidate, never escalate. The range goes in the message because
+        // the reader who has to retry is an agent parsing stderr.
+        opts.depth = numFlag("--depth", value, {
+          max: 5,
+          hint: "a whole number 1-5 (1 = one candidate, never escalate)",
+        });
         break;
       case "--hypothesis":
         opts.hypothesis = value;
@@ -112,14 +114,10 @@ function parseArgs(argv) {
         opts.cwd = resolve(value);
         break;
       case "--timeout":
-        opts.timeout = Number(value);
-        if (!Number.isInteger(opts.timeout) || opts.timeout <= 0)
-          throw new Error(`--timeout wants a positive whole number of ms, got "${value}"`);
+        opts.timeout = numFlag("--timeout", value, { hint: "a positive whole number of ms" });
         break;
       case "--max-bytes":
-        opts.maxBytes = Number(value);
-        if (!Number.isInteger(opts.maxBytes) || opts.maxBytes <= 0)
-          throw new Error(`--max-bytes wants a positive whole number, got "${value}"`);
+        opts.maxBytes = numFlag("--max-bytes", value);
         break;
       default:
         throw new Error(`unrecognised flag: ${flag}\n\n${USAGE}`);

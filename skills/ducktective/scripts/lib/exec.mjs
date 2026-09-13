@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
  * raise: it exits 1 (cmd.exe) or 127 (sh) and prints "not recognized". Left
  * alone, that reads as a reproduced failure or a passing check.
  */
-export const NOT_RUNNABLE =
+const NOT_RUNNABLE =
   /\bis not recognized as (?:an internal or external command|the name of a program|a cmdlet)\b|:\s*(?:\S+: )?(?:command )?not found\b|No such file or directory/i;
 
 /** True when the run looks like "the thing you asked me to run could not run". */

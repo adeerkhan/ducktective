@@ -102,8 +102,6 @@ export function fromCaseFile(raw, source = "cases.jsonl") {
         id: `${s.file}:${s.line}`,
         file: String(s.file),
         label: `${s.file}:${s.line}`,
-        failHits: 1,
-        passHits: 0,
       })),
     },
     candidates: cands,

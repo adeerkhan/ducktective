@@ -13,6 +13,7 @@
  * (`site/src/lib/engine/memory.ts`), so the browser and the CLI rank identically.
  * If you change one, change both.
  */
+import { numFlag } from "./lib/args.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -55,14 +56,10 @@ function parseArgs(argv) {
         opts.repo = resolve(value);
         break;
       case "--top":
-        opts.top = Number(value);
-        if (!Number.isInteger(opts.top) || opts.top <= 0)
-          throw new Error(`--top wants a positive whole number, got "${value}"`);
+        opts.top = numFlag("--top", value);
         break;
       case "--min":
-        opts.min = Number(value);
-        if (!Number.isFinite(opts.min) || opts.min < 0 || opts.min > 1)
-          throw new Error(`--min wants a number between 0 and 1, got "${value}"`);
+        opts.min = numFlag("--min", value, { min: 0, max: 1, integer: false });
         break;
       default:
         throw new Error(`unrecognised flag: ${flag}\n\n${USAGE}`);

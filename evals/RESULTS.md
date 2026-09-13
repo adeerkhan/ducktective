@@ -79,7 +79,7 @@ plan asked for. Two gaps and one broken render surfaced from the doc itself:
 
 ## The first real-repo pilot (and the two bugs it found)
 
-`evals/runlog.mjs` keeps a per-case ledger; `evals/RUNLOG.csv` holds the rows, with
+`evals/runlog.mjs` keeps a per-case ledger; `evals/RUNLOG.jsonl` holds the rows, with
 a `provenance` column because `docs/ref-work.md` §8 says to "measure on repos you
 don't control the selection of, and say so". Pilot against
 `ref/scientific-agent-skills` — a third-party repo, its own test tree, nothing about

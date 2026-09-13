@@ -19,6 +19,7 @@
  * subprocesses whose output contains a traceback. The doc's "pytest first" is a
  * parser priority, not a dependency.
  */
+import { numFlag } from "./lib/args.mjs";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -70,13 +71,6 @@ const LOC_FRAME = /^(\S+?\.(?:py|js|ts|tsx|jsx|mjs|cjs)):(\d+)(?::\s*(.*))?$/;
 export const RUNNER_MISUSE =
   /no tests ran|no tests were collected|empty test suite|unrecognized arguments|usage: |not found: |file or directory not found|cannot import name|cannot find module|moduleNotFoundError|importerror|error: (?:not found|no such)|interrupted:/i;
 
-function positiveInt(flag, value, fallback) {
-  const n = Number(value);
-  if (!Number.isInteger(n) || n <= 0)
-    throw new Error(`${flag} wants a positive whole number, got "${value}"`);
-  return fallback ? Math.min(fallback, Math.max(1, n)) : n;
-}
-
 function parseArgs(argv) {
   const opts = { cwd: ".", timeout: 120_000, maxBytes: 4000, maxCandidates: 5 };
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -106,17 +100,17 @@ function parseArgs(argv) {
         opts.baseline = resolve(value);
         break;
       case "--timeout":
-        opts.timeout = positiveInt(flag, value);
+        opts.timeout = numFlag(flag, value);
         break;
       case "--max-bytes":
-        opts.maxBytes = positiveInt(flag, value);
+        opts.maxBytes = numFlag(flag, value);
         break;
       case "--max-candidates": {
         // Deliberately NOT `--depth`: the design doc reserves that name for the
         // escalation policy (1 = try one candidate hard, 2 = escalate). A list
         // cap and a policy dial must not share a flag.
         const wanted = Number(value);
-        opts.maxCandidates = positiveInt(flag, value, 5);
+        opts.maxCandidates = numFlag(flag, value, { max: 5, clamp: true });
         // Silent clamping is how an agent that asked for seven leads trusts a
         // list of five.
         if (wanted !== opts.maxCandidates)

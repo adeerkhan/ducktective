@@ -17,8 +17,6 @@ export type CoveredSite = {
   id: string;
   file: string;
   label: string;
-  failHits: number;
-  passHits: number;
 };
 
 export type Reproduction = {

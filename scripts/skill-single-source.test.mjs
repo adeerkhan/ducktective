@@ -72,7 +72,11 @@ test("docs/architecture.md stays a true reference", () => {
     if (name === "root") continue;
     assert.ok(doc.includes(name), `architecture.md omits site route /${name}`);
   }
-  for (const f of ["case-file.schema.json", "cases.jsonl", "RUNLOG.csv", "evals/cases"]) {
+  // Derived, like the tool and route lists above: the guard that names a data file
+  // by hand goes stale the day it is renamed, which is the failure it exists to catch.
+  const ledger = readdirSync(join(ROOT, "evals")).find((f) => /^RUNLOG\./.test(f));
+  assert.ok(ledger, "no evals/RUNLOG.* ledger on disk");
+  for (const f of ["case-file.schema.json", "cases.jsonl", ledger, "evals/cases"]) {
     assert.ok(doc.includes(f), `architecture.md omits ${f}`);
   }
 });

@@ -10,14 +10,9 @@ const stamps: Record<CaseFile["status"], string> = {
   unverified: "UNVERIFIED",
 };
 
-export function CaseFileSheet({ file, className }: { file: CaseFile; className?: string }) {
+export function CaseFileSheet({ file }: { file: CaseFile }) {
   return (
-    <article
-      className={cn(
-        "relative overflow-hidden rounded-xl bg-paper text-paper-ink shadow-[0_24px_60px_-28px_rgba(0,0,0,0.55)]",
-        className,
-      )}
-    >
+    <article className="relative overflow-hidden rounded-xl bg-paper text-paper-ink shadow-[0_24px_60px_-28px_rgba(0,0,0,0.55)]">
       <div className="pointer-events-none absolute inset-y-0 left-0 w-2 bg-[repeating-linear-gradient(180deg,transparent,transparent_10px,rgba(138,64,56,0.55)_10px,rgba(138,64,56,0.55)_12px)]" />
       <header className="flex flex-wrap items-start justify-between gap-4 border-b border-paper-rule px-6 py-5 pl-8">
         <div>

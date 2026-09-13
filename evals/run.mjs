@@ -109,7 +109,9 @@ function prepareCoverage(c, py, cwd) {
     // `.coverage` accumulates across runs, which would make the two phases report
     // identical line sets and the fail-only diff empty. Each phase starts clean.
     rmSync(join(cwd, ".coverage"), { force: true });
-    const run = spawnSync(py, ["-m", "coverage", "run", "-m", "pytest", "-q", file], {
+    // The run's own exit is not the signal: a failing test under coverage is exactly
+    // what the corpus wants. Only `coverage json` failing is an error here.
+    spawnSync(py, ["-m", "coverage", "run", "-m", "pytest", "-q", file], {
       cwd,
       encoding: "utf8",
       windowsHide: true,
@@ -120,7 +122,6 @@ function prepareCoverage(c, py, cwd) {
       windowsHide: true,
     });
     if (out.status !== 0) extra.push(`coverage ${phase}: ${out.stderr.slice(0, 120)}`);
-    void run;
   }
   return extra;
 }

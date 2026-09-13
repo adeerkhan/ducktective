@@ -5,39 +5,54 @@ import { SiteShell } from "@/components/site-shell";
 import { CaseFileSheet } from "@/components/case-file-sheet";
 import { Button } from "@/components/ui/button";
 import { investigate, listFixtures } from "@/lib/engine/investigate";
-import { similarCases } from "@/lib/engine/memory";
-import { useDuck } from "@/lib/store";
-import type { Candidate, InvestigationStep } from "@/lib/engine/types";
+import { loadRapSheet, saveCase, similarCases } from "@/lib/engine/memory";
+import type { Candidate, CaseFile, InvestigationStep, Trace } from "@/lib/engine/types";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/workbench")({ component: Workbench });
 
+/** The playback cursor over a finished trace. Local to this page, and only ever
+ * read here — the rap sheet it writes is the shared part, and that lives in
+ * localStorage (see lib/engine/memory.ts). `Playback`, not `Play`: the duck icon
+ * in this file already owns that name. */
+type Playback = { trace: Trace; visible: number; playing: boolean };
+
 const fixtures = listFixtures();
 
 function Workbench() {
-  const { play, start, reveal, finishPlay, archive, hydrate, sheet } = useDuck();
+  const [play, setPlay] = useState<Playback | null>(null);
+  const [sheet, setSheet] = useState<CaseFile[]>(loadRapSheet);
   const [selected, setSelected] = useState(fixtures[0]?.id ?? "inclusive-end");
 
   const archivedFor = useRef<string | null>(null);
 
-  useEffect(() => {
-    hydrate();
-  }, [hydrate]);
-
+  // One timeout per step: the effect re-arms on every `play` change and cleans up
+  // after itself, which is what makes "Skip playback" safe — jumping `visible` to
+  // the end stops the chain instead of racing a pending tick.
   useEffect(() => {
     if (!play?.playing) return;
-    const t = window.setTimeout(() => reveal(), 900);
+    const t = window.setTimeout(() => {
+      setPlay((p) => {
+        if (!p) return p;
+        const next = Math.min(p.visible + 1, p.trace.steps.length);
+        return { ...p, visible: next, playing: next < p.trace.steps.length };
+      });
+    }, 900);
     return () => window.clearTimeout(t);
-  }, [play?.playing, play?.visible, reveal]);
+  }, [play]);
 
+  const finished =
+    play && !play.playing && play.visible === play.trace.steps.length ? play : undefined;
+
+  // A trace is archived once per run, so replaying the same fixture does not pile
+  // five copies of one case onto the sheet.
   useEffect(() => {
-    if (!play) return;
-    if (play.visible !== play.trace.steps.length || play.playing) return;
-    const id = play.trace.caseFile.id;
+    if (!finished) return;
+    const id = finished.trace.caseFile.id;
     if (archivedFor.current === id) return;
     archivedFor.current = id;
-    archive(play.trace.caseFile);
-  }, [play, archive]);
+    setSheet(saveCase(finished.trace.caseFile));
+  }, [finished]);
 
   const visibleSteps = play?.trace.steps.slice(0, play.visible) ?? [];
   const caseFile = useMemo(() => {
@@ -50,8 +65,11 @@ function Workbench() {
   const cousins = caseFile ? similarCases(caseFile, sheet) : [];
 
   function runSelected() {
-    const trace = investigate(selected);
-    start(trace);
+    setPlay({ trace: investigate(selected), visible: 1, playing: true });
+  }
+
+  function skipPlayback() {
+    setPlay((p) => (p ? { ...p, visible: p.trace.steps.length, playing: false } : p));
   }
 
   return (
@@ -102,7 +120,7 @@ function Workbench() {
               Investigate
             </Button>
             {play?.playing ? (
-              <Button variant="ghost" onClick={finishPlay}>
+              <Button variant="ghost" onClick={skipPlayback}>
                 <Square className="size-3.5" />
                 Skip playback
               </Button>

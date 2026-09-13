@@ -45,13 +45,9 @@ const TARGETS = {
   agents: () => join(process.cwd(), ".agents", "skills", SKILL_NAME),
 };
 
-const RAW_BASE = "https://raw.githubusercontent.com/adeerkhan/ducktective/main/skills/ducktective";
-
 const USAGE = `usage: install.mjs [--target claude|codex|agents] [--dest DIR] [--source DIR] [--force] [--dry-run]
   --target NAME     claude (~/.claude/skills) | codex (~/.agents/skills) | agents (./.agents/skills)
   --dest DIR        an explicit directory; wins over --target
-  --source DIR      copy from this checkout instead of downloading (default: the skill folder this script sits in)
-  --download        fetch the file list and contents from GitHub instead of copying locally
   --force           overwrite files whose contents differ
   --dry-run         print the plan, write nothing`;
 
@@ -76,10 +72,6 @@ function parseArgs(argv) {
         break;
       case "--dry-run":
         opts.dryRun = true;
-        i--;
-        break;
-      case "--download":
-        opts.download = true;
         i--;
         break;
       case "--help":
@@ -112,54 +104,26 @@ export function skillFiles(root) {
 
 const hash = (buf) => createHash("sha256").update(buf).digest("hex").slice(0, 12);
 
-/** Local checkout or the raw GitHub URL — the rest of the tool does not care. */
 /** The skill folder this script lives in, when it is a clone. */
 const SELF_SKILL = resolve(fileURLToPath(import.meta.url), "..", "..");
 
+/**
+ * The source is always a local checkout: this script's own skill folder, or
+ * `--source`. A `--download` mode was deleted before it ever reached a user —
+ * ~35 lines of GitHub-contents listing and raw fetching that no test could reach
+ * and no release had exercised, while `git clone` plus this script and the Claude
+ * Code plugin manifests already cover installing without a manual copy. Re-add it
+ * only with an offline test, because an untested network path in an installer is
+ * how a stranger's home directory ends up with half a skill.
+ */
 function makeSource(opts) {
-  const root = resolve(
-    opts.source ?? (existsSync(join(SELF_SKILL, "SKILL.md")) && !opts.download ? SELF_SKILL : ""),
-  );
-  if (root && existsSync(join(root, "SKILL.md"))) {
-    return {
-      kind: `checkout ${root}`,
-      list: () => skillFiles(root),
-      read: (rel) => readFileSync(join(root, rel)),
-    };
-  }
-  if (root) throw new Error(`--source ${root} has no SKILL.md`);
-  if (!opts.download)
-    throw new Error(
-      `no --source and this script is not inside a skill folder — pass --source DIR, or --download to fetch from GitHub\n\n${USAGE}`,
-    );
-  /** @type {Map<string, Buffer>} */
-  const fetched = new Map();
+  const root = resolve(opts.source ?? SELF_SKILL);
+  if (!existsSync(join(root, "SKILL.md")))
+    throw new Error(`--source ${root} has no SKILL.md — run this from a clone of the repo`);
   return {
-    kind: RAW_BASE,
-    async list() {
-      // The manifest is the file list, fetched as text so one network path
-      // covers both modes. A hardcoded list would rot the day a tool is added.
-      const scripts = [];
-      for (const dir of ["scripts", "scripts/lib"]) {
-        const res = await fetch(
-          `https://api.github.com/repos/adeerkhan/ducktective/contents/skills/ducktective/${dir}`,
-        );
-        if (!res.ok) throw new Error(`could not list ${dir}: HTTP ${res.status}`);
-        for (const entry of await res.json()) {
-          if (entry.type === "file" && entry.name.endsWith(".mjs"))
-            scripts.push(`${dir}/${entry.name}`);
-        }
-      }
-      return ["SKILL.md", "case-file.schema.json", ...scripts];
-    },
-    async read(rel) {
-      if (fetched.has(rel)) return fetched.get(rel);
-      const res = await fetch(`${RAW_BASE}/${rel}`);
-      if (!res.ok) throw new Error(`could not download ${rel}: HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      fetched.set(rel, buf);
-      return buf;
-    },
+    kind: `checkout ${root}`,
+    list: () => skillFiles(root),
+    read: (rel) => readFileSync(join(root, rel)),
   };
 }
 
