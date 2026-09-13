@@ -1,0 +1,4 @@
+recorded_at,case_id,repo,provenance,outcome,stop_correct,first_falsification_hit,survived_verify,tokens_plain,tokens_duck,human_opened,note
+2026-09-12,DT-260913-cbb13b,ref/scientific-agent-skills,real,error,yes,,not-run,,,,
+2026-09-12,DT-260913-199997,ref/scientific-agent-skills,real,error,yes,,not-run,,,,
+2026-09-12,DT-260913-3faaa5,ref/scientific-agent-skills,real,does_not_reproduce,yes,,not-run,,,,

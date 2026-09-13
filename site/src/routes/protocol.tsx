@@ -21,9 +21,10 @@ function Protocol() {
         <section>
           <h2 className="font-display text-2xl tracking-tight">Purpose</h2>
           <p className="mt-3 text-muted">
-            Coding agents are now in an estimated 22–28% of a 128,018-project GitHub sample (Agentic
-            Much?, Apr 2026). They write more than humans can review. The verification layer that
-            used to be a person asking “is this actually the bug?” was not replaced. It was deleted.
+            Coding agents are now in an estimated 22.2–28.7% of a 128,018-project GitHub sample
+            (Agentic Much?, arXiv:2601.18341, early 2026). They write more than humans can review.
+            The verification layer that used to be a person asking “is this actually the bug?” was
+            not replaced. It was deleted.
           </p>
           <p className="mt-3 text-muted">
             The published failure mode has a name.{" "}
@@ -36,8 +37,9 @@ function Protocol() {
           </p>
           <p className="mt-3 text-muted">
             False success is the sibling: in AppWorld, 75.8% of self-assessing coding-agent
-            trajectories claimed success in language while the environment said otherwise.
-            LLM-as-judge does not save you — judges anchor on the word “done.”
+            trajectories (1,879 of them, arXiv:2606.09863) claimed success in language while the
+            environment said otherwise. LLM-as-judge does not save you — judges anchor on the word
+            “done.”
           </p>
           <p className="mt-3 text-muted">
             So the purpose is narrow: force a host agent (Claude Code first) through reproduce → cap
@@ -90,9 +92,10 @@ function Protocol() {
           <h2 className="font-display text-2xl tracking-tight">Why it will be used</h2>
           <p className="mt-3 text-muted">
             GitHub stars are a use proxy, not a paper proxy. Full agents that you live in (OpenHands
-            87k, SWE-agent 20k) win distribution. Graph localizers (LocAgent 627) do not, even when
-            file-level Acc@5 is 92.7%. Agentless (2.1k) is the existence proof that a smaller
-            pipeline, honestly scoped, out-stars a cleverer agent.
+            87,671, SWE-agent 20,310) win distribution. Graph localizers (LocAgent 627) do not, even
+            with file-level Acc@5 up to 92.7% — and that number is on SWE-Bench-Lite, not Verified.
+            Agentless (2,109) is the existence proof that a smaller pipeline, honestly scoped,
+            out-stars a cleverer agent. Star counts are a snapshot of 12 Sep 2026, not a trend line.
           </p>
           <p className="mt-3 text-muted">
             Ducktective is aimed at the Agentless band, with a better distribution channel: the
@@ -153,6 +156,35 @@ function Protocol() {
             sheet. The green ticket is the load-bearing demo: if Ducktective patches it, the skill
             has failed. If it stops, the skill is doing the one job the field still underserves.
           </p>
+        </section>
+        <section>
+          <h2 className="font-display text-2xl tracking-tight">Sources</h2>
+          <p className="mt-3 text-sm text-muted">
+            Every number above is quoted from these, checked 12 Sep 2026. Anything that drifts — the
+            star counts especially — is dated so a reader can tell a stale figure from a false one.
+            A skill about evidence has no business presenting any other kind.
+          </p>
+          <ul className="mt-4 space-y-1 font-mono text-[12px] text-muted">
+            <li>
+              arXiv:2603.25764 — Silent semantic failure: 1,750 trajectories, 50 SWE-bench Verified
+              tasks
+            </li>
+            <li>
+              arXiv:2606.09863 — False success in AppWorld: 75.8% of 1,879 self-assessing
+              trajectories
+            </li>
+            <li>
+              arXiv:2601.18341 — Agentic Much? 22.2–28.7% of 128,018 GitHub projects, early 2026
+            </li>
+            <li>
+              arXiv:2503.09089 — LocAgent: file-level Acc@5 up to 92.70% (Qwen2.5-32B-ft) / 94.16%
+              (Claude-3.5), SWE-Bench-Lite
+            </li>
+            <li>
+              GitHub API, 12 Sep 2026 — OpenHands 87,671 · SWE-agent 20,310 · AutoCodeRover 3,099 ·
+              Agentless 2,109 · LocAgent 627
+            </li>
+          </ul>
         </section>
       </article>
 

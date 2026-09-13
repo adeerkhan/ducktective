@@ -81,6 +81,7 @@ function Home() {
             </li>
             <li>
               <span className="font-medium text-fg">LocAgent has 627 stars.</span>{" "}
+              {/* every star figure on this page is a snapshot; see the table header */}
               <span className="text-muted">
                 OpenHands has 87k. Graph localizers do not lose because the paper is weak. They lose
                 because nobody wants another agent to operate.
@@ -88,7 +89,7 @@ function Home() {
             </li>
             <li>
               <span className="font-medium text-fg">
-                Agentless has 2.1k stars by being smaller.
+                Agentless has 2,109 stars by being smaller.
               </span>{" "}
               <span className="text-muted">
                 Ducktective is that move for verification: a skill inside Claude Code, Cursor, and
@@ -165,7 +166,7 @@ function Home() {
               <tr className="border-b border-border">
                 <th className="px-4 py-3 font-medium">Project</th>
                 <th className="px-4 py-3 font-medium">Kind</th>
-                <th className="px-4 py-3 font-medium">Stars</th>
+                <th className="px-4 py-3 font-medium">Stars · 12 Sep 2026</th>
               </tr>
             </thead>
             <tbody className="text-muted">

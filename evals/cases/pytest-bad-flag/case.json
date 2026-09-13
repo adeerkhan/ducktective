@@ -1,0 +1,5 @@
+{
+  "name": "pytest usage error: exit 4, a message no signature list knew",
+  "cmd": "{py} -m pytest -q --totally-not-a-flag test_real.py",
+  "expect": { "outcome": "error", "candidates": 0 }
+}

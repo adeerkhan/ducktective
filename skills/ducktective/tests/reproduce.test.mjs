@@ -12,6 +12,7 @@ import {
   coverageHint,
   baseName,
   isAbsoluteLike,
+  isLocalFile,
   parseFrames,
   RUNNER_MISUSE,
   seedCandidates,
@@ -397,6 +398,21 @@ const PY_TB = [
   "    return sum(rows[start:end])",
   "AssertionError: 2 != 3",
 ].join("\n");
+
+test("pseudo-locations are not repo evidence", () => {
+  // `node -e` and `python -c` blame a frame that is not a file. Treating it as
+  // in-repo evidence turned a runtime error into a "reproduced symptom" — which
+  // is how the first version of the evidence rule still passed a bad case.
+  for (const p of ["[eval]", "<string>", "<stdin>", "[unknown]"])
+    assert.equal(isLocalFile(p), false, `${p} is not a file`);
+  for (const p of ["app.py", "src/app.py", "test_money.py", "totals.check.mjs"])
+    assert.equal(isLocalFile(p), true, `${p} is a repo file`);
+  assert.equal(
+    isLocalFile("C:/Python314/unittest/main.py"),
+    false,
+    "absolute paths outside the repo are not local either",
+  );
+});
 
 test("detectRunner reads the command, then the output", () => {
   assert.equal(detectRunner("pytest -q tests", ""), "pytest");

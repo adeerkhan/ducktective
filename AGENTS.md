@@ -77,6 +77,9 @@ publishes `site/dist` via Pages Actions. First enable: repo **Settings → Pages
   without `--yes` (a denylist is theatre; SKILL.md says "not a sandbox" in those
   words), and the store is append-mostly — one line per case id, rewritten in
   place — because a file piled with copies of every half-answer is worse tomorrow.
+- The whole system in one file, kept honest by a test: `docs/architecture.md`. Update it when
+  you add a tool, a route, or a status — future work is based on it, and
+  `scripts/skill-single-source.test.mjs` fails if a shipped tool or site route is missing
 - Why it's shaped this way: `docs/ducktective-design.md`
 - Prior art and the critique of the original design: `docs/ref-work.md`
 - Research clones for comparison: `ref/` (gitignored — never import from here)

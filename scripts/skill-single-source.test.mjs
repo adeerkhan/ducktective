@@ -50,6 +50,33 @@ test("the site imports SKILL.md instead of embedding a copy", () => {
   assert.ok(!statSync(join(ROOT, "site", "src", "lib", "skill-doc.ts"), { throwIfNoEntry: false }));
 });
 
+/**
+ * The reference doc is what future work is based on, so it is checked like code:
+ * a tool or a route missing from it is a silent lie by omission, which is the
+ * only way documents rot in practice.
+ */
+test("docs/architecture.md stays a true reference", () => {
+  const doc = readFileSync(join(ROOT, "docs", "architecture.md"), "utf8");
+  const scriptsDir = join(ROOT, "skills", "ducktective", "scripts");
+  for (const entry of readdirSync(scriptsDir, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".mjs")) {
+      assert.ok(
+        doc.includes(entry.name),
+        `architecture.md never mentions shipped tool ${entry.name}`,
+      );
+    }
+  }
+  assert.ok(doc.includes("install.mjs"), "architecture.md omits the installer");
+  for (const route of readdirSync(join(ROOT, "site", "src", "routes"))) {
+    const name = route.replace(/^__/, "").replace(/\.tsx$/, "");
+    if (name === "root") continue;
+    assert.ok(doc.includes(name), `architecture.md omits site route /${name}`);
+  }
+  for (const f of ["case-file.schema.json", "cases.jsonl", "RUNLOG.csv", "evals/cases"]) {
+    assert.ok(doc.includes(f), `architecture.md omits ${f}`);
+  }
+});
+
 test("every tool the skill ships is documented in SKILL.md", () => {
   const skill = readFileSync(SKILL, "utf8");
   const scriptsDir = join(ROOT, "skills", "ducktective", "scripts");

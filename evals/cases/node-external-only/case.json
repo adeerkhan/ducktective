@@ -1,0 +1,5 @@
+{
+  "name": "failure whose entire traceback is runtime internals",
+  "cmd": "{node} -e \"require('node:nothing_here')\"",
+  "expect": { "outcome": "error", "candidates": 0 }
+}

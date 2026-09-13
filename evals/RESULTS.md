@@ -77,6 +77,45 @@ plan asked for. Two gaps and one broken render surfaced from the doc itself:
   fails if README and `install.mjs` disagree about a target — prose drift needs a
   test like any other claim.
 
+## The first real-repo pilot (and the two bugs it found)
+
+`evals/runlog.mjs` keeps a per-case ledger; `evals/RUNLOG.csv` holds the rows, with
+a `provenance` column because `docs/ref-work.md` §8 says to "measure on repos you
+don't control the selection of, and say so". Pilot against
+`ref/scientific-agent-skills` — a third-party repo, its own test tree, nothing about
+the case chosen by me:
+
+| Command                                                                   | Truth                 | Gate said                                 | Correct?  |
+| ------------------------------------------------------------------------- | --------------------- | ----------------------------------------- | --------- |
+| `pytest -q tests` (repo refuses: 105 skills share module names)           | broken invocation     | first run: **`reproduced`**, 0 candidates | ✗ **bug** |
+| `pytest -q tests/_contract` (no tests there)                              | nothing collected     | `error`                                   | ✓         |
+| `pytest -q tests/analytical-method-validation/test_scripts.py` (112 pass) | symptom did not occur | `does_not_reproduce`                      | ✓         |
+
+Two real bugs, neither reachable from my own fixtures:
+
+1. **Evidence-free failures were called reproductions.** The classifier decided by
+   matching error _strings_; this repo's message (`ERROR: cannot collect 105 skills
+in one process …`) matched none of them, so a usage error exited as a
+   reproduced symptom. Now the rule is evidence, not vocabulary: non-zero exit with
+   no in-repo traceback frame and no fail-only coverage line is `error`. That also
+   deleted the old `RUNNER_MISUSE` branch as a _decision_ — it now only chooses the
+   wording of the note.
+2. **`[eval]` counted as a repo file.** After fix 1, a new corpus case
+   (`node -e "require('node:nothing_here')"`) still came back `reproduced`, because
+   a pseudo-location has no separator and no drive, so "not absolute" read as
+   local. `isLocalFile()` now rejects `<...>` / `[...]` shapes; `python -c`'s
+   `<string>` was the same hole waiting to be hit.
+
+Both are pinned: `node-external-only` and `pytest-bad-flag` are corpus cases (14 now), `isLocalFile` has a unit test, and the run log has its own tests — because the
+first version of the ledger parsed rows with `line[i]` (characters, not fields),
+reported "0 real cases" against real rows, and never raised. A measuring tool that
+silently misreads is the worst kind of bug in a project whose whole pitch is
+measurement.
+
+Stop-correctness on the pilot: **3/3** with the fixes, and `no data` on the four
+metrics that need a host model and a human — which is the honest state, not a gap
+to fill in.
+
 ## Verified against real coverage.py, for the first time
 
 `coverage-failonly` produces `cov-baseline.json` (passing test) and

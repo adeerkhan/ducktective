@@ -14,7 +14,7 @@ It is a contract the host agent is walked through, not a runtime. It does not in
 Ducktective, investigate this failing test.
 ```
 
-**Site:** <https://adeerkhan.github.io/ducktective/> · **Skill:** [`skills/ducktective/SKILL.md`](skills/ducktective/SKILL.md) · **Design:** [`docs/ducktective-design.md`](docs/ducktective-design.md)
+**Site:** <https://adeerkhan.github.io/ducktective/> · **Skill:** [`skills/ducktective/SKILL.md`](skills/ducktective/SKILL.md) · **Design:** [`docs/ducktective-design.md`](docs/ducktective-design.md) · **Architecture:** [`docs/architecture.md`](docs/architecture.md)
 
 ---
 

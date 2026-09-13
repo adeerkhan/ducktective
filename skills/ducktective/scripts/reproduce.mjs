@@ -198,7 +198,24 @@ export function isAbsoluteLike(p) {
 }
 
 function frame(file, line, fn, raw) {
-  return { file, line, fn, raw, inside: !isAbsoluteLike(file) && !file.startsWith("../") };
+  return { file, line, fn, raw, inside: isLocalFile(file) };
+}
+
+/**
+ * Is this a file in the repo, or a pseudo-location that only *looks* local?
+ *
+ * `[eval]` (node -e), `<string>` (python -c) and `<stdin>` have no separator and
+ * no drive, so "not absolute" alone called them in-repo evidence — and a failure
+ * with nothing but those frames was classified as a reproduced symptom. Neither
+ * names a file anyone can open, so neither may rank as a lead.
+ */
+export function isLocalFile(file) {
+  return (
+    !isAbsoluteLike(file) &&
+    !file.startsWith("../") &&
+    !/^[<[/.]*[<[]/.test(file) &&
+    !/^[<[]/.test(file)
+  );
 }
 
 function v8FnName(raw) {
@@ -423,21 +440,23 @@ async function main() {
     notes.push(
       "the command passed, so the reported symptom did not occur; the ticket may be stale",
     );
-  } else if (local.length === 0 && localSites.length === 0 && RUNNER_MISUSE.test(output)) {
+  } else if (local.length === 0 && localSites.length === 0) {
     // A non-zero exit is only a reproduction if something in THIS repo failed.
-    // `unittest no_such_module` and `pytest -q missing.py` exit 1/4 with a
-    // traceback that never enters the code under investigation.
+    // Deciding that from *evidence* rather than from a list of error strings is
+    // the point: a real repo I did not write (scientific-agent-skills) exited 2
+    // with `ERROR: cannot collect 105 skills in one process …`, matched none of
+    // the known signatures, and was filed as `reproduced` with zero candidates.
+    // Usage errors, collection refusals and dependency-only crashes all look
+    // like this; none of them is a symptom reproduced in the user's code.
     outcome = "error";
     notes.push(
-      "the runner failed before executing anything in this repo (bad path, bad flag, unimportable module) — that is not a reproduced symptom; read the output and fix the command",
+      (RUNNER_MISUSE.test(output)
+        ? "the runner refused to execute anything in this repo (bad path, bad flag, uncollectable tree) "
+        : "the command failed but no traceback frame or fail-only coverage line lands inside this repo ") +
+        `— exit ${result.code}; read stderr before treating this as the symptom`,
     );
   } else {
     outcome = "reproduced";
-    if (local.length === 0) {
-      notes.push(
-        "no traceback frame lands inside this repo: the failure is in a dependency or the environment",
-      );
-    }
   }
   if (result.note?.length) notes.push(result.note.join("; "));
 
