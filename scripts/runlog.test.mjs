@@ -306,6 +306,40 @@ test("the real pilot ledger parses and reports, and every unmeasured metric says
   );
 });
 
+test("an M5 answer that names its blind run is tellable from one that doesn't", (t) => {
+  const { dir, log } = sandbox(t);
+  const conf = [
+    {
+      rank: 1,
+      location: "app.py:7 total()",
+      hypothesis: "h",
+      check: "c",
+      verdict: "confirmed",
+      evidence: "e",
+      predicted: "fail",
+      check_exit_code: 1,
+    },
+  ];
+  rec(dir, log, "paired.json", draft("DT-260101-jj1010", "reproduced", conf), [
+    "--memory-changed",
+    "yes",
+    "--pair-case",
+    "DT-260101-blind",
+  ]);
+  rec(dir, log, "solo.json", draft("DT-260101-kk1111", "reproduced", conf), [
+    "--memory-changed",
+    "no",
+  ]);
+  const rows = rowsOf(log);
+  assert.equal(rows[0].pair_case_id, "DT-260101-blind", "the blind run stays citable");
+  assert.equal(rows[1].pair_case_id, "", 'no pair is blank, never the string "none"');
+  const rep = run(["--log", log, "--report"]);
+  // M5's percentage is identical either way; M5p exists so a reader can see how much of
+  // it is audited and how much is a lone claim about a comparison nobody recorded.
+  assert.match(rep.stdout, /M5\. memory changed what was tried\s+50%\s+\[1\/2\]/);
+  assert.match(rep.stdout, /M5p\..*naming their blind run\s+1\/2 answered/);
+});
+
 const exists = (p) => {
   try {
     readFileSync(p);

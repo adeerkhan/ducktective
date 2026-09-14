@@ -49,6 +49,7 @@ const FIELDS = [
   "decision_changed", // did the case file change what was done next (M4, the §9 claim)
   "human_opened", // did anyone open it at all (M4n) — attention, not usefulness
   "memory_changed_search", // yes | no | n/a (M5) — needs the paired run, design §8.4
+  "pair_case_id", // the blind run this row beat (M5); blank = no pair was run
   "tokens_plain", // host-reported
   "tokens_duck", // host-reported
   "wall_clock_min", // host-reported
@@ -156,6 +157,10 @@ function record(opts) {
   const memory = oneOf("--memory-changed", opts["memory-changed"], YES_NO_NA);
   const duckClaim = oneOf("--duck-claim", opts["duck-claim"], CLAIM);
   const plainClaim = oneOf("--plain-claim", opts["plain-claim"], CLAIM_OR_NOT_RUN);
+  // Free text is fine here: it names a case in a store and is never used as a path.
+  // It is its own column rather than a sentence in --note because M5 without the pair
+  // is an anecdote, and a reader must be able to tell those apart without parsing prose.
+  const pairCase = (opts["pair-case"] ?? "").trim();
   const wall = number("--wall-clock", opts["wall-clock"], { min: 0, integer: false });
   const tp = number("--tokens-plain", opts["tokens-plain"]);
   const td = number("--tokens-duck", opts["tokens-duck"]);
@@ -182,6 +187,7 @@ function record(opts) {
     memory_changed_search: memory,
     duck_claim_right: duckClaim,
     plain_claim_right: plainClaim,
+    pair_case_id: pairCase,
     tokens_plain: tp,
     tokens_duck: td,
     wall_clock_min: wall,
@@ -258,6 +264,13 @@ function summarise(g) {
     row("M4n", "case file merely opened (attention)", yes("human_opened"), opened.length),
     row("M5", "memory changed what was tried", yes("memory_changed_search"), mem.length),
     line(
+      "M5p",
+      "M5 answers naming their blind run",
+      `${
+        g.filter((r) => ["yes", "no"].includes(r.memory_changed_search) && r.pair_case_id).length
+      }/${mem.length || 0} answered`,
+    ),
+    line(
       "M6",
       'tokens: bare "fix this" vs Ducktective',
       `${tp.length && tp.length === td.length ? `${(mean(tp) / mean(td)).toFixed(2)}\u00d7` : "no data"}  [${Math.min(tp.length, td.length)}/${g.length}]`,
@@ -316,7 +329,8 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
         "usage:\n  node evals/runlog.mjs [--log PATH] --record --case draft.json --repo PATH \\\n" +
           "    [--provenance real|constructed] [--tokens-plain N --tokens-duck N --wall-clock N] \\\n" +
           "    [--opened yes|no] [--changed-decision yes|no] [--memory-changed yes|no|n/a] \\\n" +
-          "    [--duck-claim yes|no|none] [--plain-claim yes|no|none|not-run]\n" +
+          "    [--duck-claim yes|no|none] [--plain-claim yes|no|none|not-run] \\\n" +
+          "    [--pair-case BLIND_RUN_CASE_ID]\n" +
           "  node evals/runlog.mjs [--log PATH] --report",
       );
   }
