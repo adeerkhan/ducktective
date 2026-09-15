@@ -11,13 +11,15 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { skillFiles } from "../bin/install.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = resolve(HERE, "..");
 const INSTALL = join(SKILL_ROOT, "bin", "install.mjs");
+
+/** An empty home: target resolution must be computed, never found on this box. */
+const EMPTY_HOME = mkdtempSync(join(tmpdir(), "dt-home-"));
 
 function install(args) {
   const run = spawnSync(process.execPath, [INSTALL, "--source", SKILL_ROOT, ...args], {
@@ -82,13 +84,17 @@ test("--target resolves to the folders each agent actually scans", () => {
       {
         encoding: "utf8",
         windowsHide: true,
+        // A --target is resolved under $HOME, so an install sitting in the real
+        // home directory makes this test disagree depending on the machine. Point
+        // HOME at an empty folder: the target must be computed, never found.
+        env: { ...process.env, HOME: EMPTY_HOME, USERPROFILE: EMPTY_HOME },
       },
     );
     return JSON.parse(run.stdout).dest;
   };
-  assert.equal(where("claude"), join(homedir(), ".claude", "skills", "ducktective"));
+  assert.equal(where("claude"), join(EMPTY_HOME, ".claude", "skills", "ducktective"));
   const codex = where("codex");
-  assert.equal(codex, join(homedir(), ".agents", "skills", "ducktective"));
+  assert.equal(codex, join(EMPTY_HOME, ".agents", "skills", "ducktective"));
   assert.ok(!codex.includes(".codex"), `codex must not point at ~/.codex: ${codex}`);
   assert.equal(where("agents"), join(process.cwd(), ".agents", "skills", "ducktective"));
   assert.ok(

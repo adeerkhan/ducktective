@@ -55,6 +55,45 @@ const USAGE = `usage: run_check.mjs --file DRAFT.json --candidate RANK|LOCATION 
 const EXT = { py: "py", js: "mjs", sh: "sh" };
 const INTERPRETER = { py: "python", js: "node", sh: "sh" };
 
+/** Header `materialize()` records above the source it ran. Not runnable code. */
+const SCRIPT_HEADER =
+  "   # script written to the repo root for this run; --keep leaves it in place";
+
+/**
+ * The source of a recorded check, without the command line recorded above it.
+ *
+ * `check` holds `<runner command> + header + source` so a human can see what
+ * ran. Feeding that field back in — which is all `--verify` and `--rerun` can
+ * do — made the runner command the script's first line, so a multi-line check
+ * died on a SyntaxError and M3 ("did the claim survive a second run") was
+ * unanswerable for every check longer than one line.
+ */
+export function checkSource(check) {
+  const [head, ...rest] = (check ?? "").split("\n");
+  return rest.length && head.endsWith(SCRIPT_HEADER) ? rest.join("\n") : (check ?? "");
+}
+
+/**
+ * Which python runs the check: the repo's own, if it has one.
+ *
+ * `python` on PATH is the machine's, and a repo whose deps live in `.venv` has
+ * them nowhere near it. On this machine that turned a real `confirmed` into a
+ * `falsified` on the strength of `ModuleNotFoundError: No module named 'pytest'`
+ * — the hypothesis was never tested. The venv layout is a filesystem fact, so it
+ * is read here instead of being guessed at from PATH.
+ */
+function pythonFor(repo) {
+  for (const rel of [
+    join(".venv", "Scripts", "python.exe"),
+    join(".venv", "bin", "python"),
+    join("venv", "Scripts", "python.exe"),
+    join("venv", "bin", "python"),
+  ]) {
+    if (existsSync(join(repo, rel))) return join(repo, rel);
+  }
+  return INTERPRETER.py;
+}
+
 function parseArgs(argv) {
   const opts = { cwd: null, timeout: 60_000, maxBytes: 4000 };
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -210,7 +249,8 @@ export function materialize(check, { lang, repo, caseId, rank }) {
     );
   const file = join(repo, `ducktective-check-${caseId}-${rank ?? 0}.${EXT[use]}`);
   writeFileSync(file, check.endsWith("\n") ? check : check + "\n", "utf8");
-  return { command: `${INTERPRETER[use]} "${file}"`, file };
+  const exe = use === "py" ? pythonFor(repo) : INTERPRETER[use];
+  return { command: `"${exe}" "${file}"`, file };
 }
 
 /**
@@ -298,7 +338,7 @@ async function main() {
     );
   if (reasons.length) return refuse(reasons);
 
-  const check = opts.cmd ?? cand.check;
+  const check = opts.cmd ?? checkSource(cand.check);
   if (!(check ?? "").trim())
     return refuse('no check to run — give it one with --cmd or set the candidate\'s "check" field');
 
@@ -385,7 +425,7 @@ async function main() {
   }
 
   const recorded = prepared.file
-    ? `${prepared.command}   # script written to the repo root for this run; --keep leaves it in place\n${check.trimEnd()}`
+    ? `${prepared.command}${SCRIPT_HEADER}\n${check.trimEnd()}`
     : prepared.command;
 
   Object.assign(cand, {

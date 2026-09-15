@@ -348,3 +348,22 @@ const exists = (p) => {
     return false;
   }
 };
+
+test("re-logging a case refreshes its row, it does not count the bug twice", (t) => {
+  // The ledger is one line per case id for the same reason the store is: the
+  // investigation that gets re-recorded after --verify ran is the SAME run. Two
+  // rows would double M2 and make a metric of one bug.
+  const { dir, log } = sandbox(t);
+  const first = draft("DT-260101-ff00ff", "reproduced", [
+    { rank: 1, verdict: "confirmed", location: "app.py:1 f()" },
+  ]);
+  rec(dir, log, "c1.json", first, ["--provenance", "real"]);
+  const again = rec(dir, log, "c2.json", {
+    ...first,
+    candidates: [{ ...first.candidates[0], verified_verdict: "confirmed" }],
+  });
+  const rows = rowsOf(log);
+  assert.equal(rows.length, 1, "one case id, one row");
+  assert.equal(rows[0].survived_verify, "yes", "the re-log carries the new fact");
+  assert.equal(rows[0].provenance, "real", "and the answers typed for it");
+});

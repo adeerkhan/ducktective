@@ -16,6 +16,7 @@ import {
   parseFrames,
   RUNNER_MISUSE,
   seedCandidates,
+  TEST_NODEID,
   USAGE as USAGE_TEXT,
 } from "../scripts/reproduce.mjs";
 import {
@@ -529,6 +530,38 @@ test("seedCandidates ranks local leads first and dependency frames last", () => 
     true,
   );
   assert.equal(seedCandidates(frames, sites, 1, null).length, 1);
+});
+
+test("vendored code that ships inside the checkout neither leads nor proves", () => {
+  // A real repo (WebPointCloud) filled all five candidate slots with
+  // `.venv/Lib/site-packages/_pytest/*` and never named the failing test file:
+  // "dependency frames last" was false for the dependencies a repo keeps in its
+  // own tree, which is most of them.
+  for (const p of [
+    ".venv/Lib/site-packages/_pytest/runner.py",
+    "venv/lib/python3.12/site-packages/pytest/main.py",
+    "node_modules/jest-config/build/readConfigs.js",
+    String.raw`C:\repo\.venv\Lib\site-packages\_pytest\python.py`,
+  ])
+    assert.equal(isLocalFile(p), false, `${p} is the runner's plumbing, not this repo's code`);
+  for (const p of ["tests/test_3dgs.py", "src/app.py", "node_store.js"])
+    assert.equal(isLocalFile(p), true, `${p} is project code`);
+
+  const frames = parseFrames(
+    '  File ".venv/lib/python3.12/site-packages/_pytest/python.py", line 171, in warn',
+    "/repo",
+  );
+  assert.match(seedCandidates(frames, [], 5, null)[0].why, /outside this repo/);
+});
+
+test("a pytest nodeid names this repo even when the traceback does not", () => {
+  // A warning escalated to an error reports its origin inside `_pytest/python.py`,
+  // so a genuine failure of the project's own test has no local frame at all —
+  // only the nodeid pytest prints. Without this the run reads as "nothing landed
+  // inside this repo", which is the false stop this rule exists to prevent.
+  assert.equal(TEST_NODEID.test("FAILED tests/test_3dgs.py::TestPly::test_overflow"), true);
+  assert.equal(TEST_NODEID.test("tests/test_3dgs.py:401: RuntimeWarning"), false);
+  assert.equal(TEST_NODEID.test("ModuleNotFoundError: No module named 'pytest'"), false);
 });
 
 // --- the store, and where it lands ------------------------------------------

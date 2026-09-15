@@ -8,7 +8,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -674,11 +682,73 @@ test("materialize sniffs a shebang and leaves single lines alone", (t) => {
     caseId: "DT-1",
     rank: 2,
   });
-  assert.match(two.command, /^python ".+ducktective-check-DT-1-2\.py"$/);
+  assert.match(two.command, /^"python" ".+ducktective-check-DT-1-2\.py"$/);
   assert.equal(dirname(two.file), d.repo, "the script must sit where it can import the repo");
   assert.equal(readFileSync(two.file, "utf8"), "#!/usr/bin/env python\nprint(1)\n");
   assert.throws(
     () => materialize("print(1)\nprint(2)\n", { repo: d.repo, caseId: "DT-1", rank: 3 }),
     /multi-line/,
   );
+});
+
+test("--verify can re-execute the check it recorded", (t) => {
+  // The recording writes the runner command above the source so a human can see
+  // what ran. Re-running that field verbatim made the command the script's first
+  // line: every multi-line check died with a SyntaxError, and M3 — "did the claim
+  // survive a second run" — could not be computed for the common case at all.
+  const d = withDraft(t, {
+    ...DRAFT(),
+    candidates: [
+      {
+        rank: 1,
+        location: "app.py:7 total()",
+        why: "appears in the failing traceback",
+        hypothesis: "the last row is dropped when end defaults to len(rows) - 1",
+        check: "#!/usr/bin/env node\nconsole.log('the oracle ran')\nprocess.exit(1)\n",
+        verdict: "pending",
+        evidence: "",
+      },
+    ],
+  });
+  const first = tool(
+    ["--file", d.file, "--candidate", "1", "--predict", "fail", "--lang", "js", "--yes"],
+    d.repo,
+  );
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(first.out.verdict, "confirmed");
+  const again = tool(["--file", d.file, "--candidate", "1", "--verify", "--yes"], d.repo);
+  assert.equal(again.code, 0, `--verify refused: ${again.stderr}`);
+  assert.equal(again.out.survived, true, JSON.stringify(again.out));
+  const cand = decided(d.read(), 1);
+  assert.equal(cand.verified_verdict, "confirmed");
+  assert.equal(
+    cand.check.split("# script written to the repo root").length - 1,
+    1,
+    "a re-run must not stack a second recorded command line onto the check",
+  );
+});
+
+test("a python check runs under the repo's own venv, not the machine's python", (t) => {
+  // Global `python` here has no numpy and no pytest. It exited 1 on
+  // ModuleNotFoundError and the tool filed that as `falsified` — a hypothesis
+  // that was never tested, recorded as a disproved one.
+  const d = withDraft(t);
+  const rel =
+    process.platform === "win32"
+      ? join(".venv", "Scripts", "python.exe")
+      : join(".venv", "bin", "python");
+  mkdirSync(join(d.repo, dirname(rel)), { recursive: true });
+  writeFileSync(join(d.repo, rel), "", "utf8");
+  const { command } = materialize("#!/usr/bin/env python\nprint(1)\n", {
+    repo: d.repo,
+    caseId: "DT-1",
+    rank: 1,
+  });
+  assert.ok(command.includes(join(d.repo, rel)), `expected the repo interpreter in: ${command}`);
+  const bare = materialize("#!/usr/bin/env python\nprint(1)\n", {
+    repo: mkdtempSync(join(tmpdir(), "dt-novenv-")),
+    caseId: "DT-1",
+    rank: 1,
+  });
+  assert.match(bare.command, /^"python" /, "no venv, no opinion");
 });

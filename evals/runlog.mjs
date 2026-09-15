@@ -25,7 +25,7 @@
  * Every value is validated, because a typo that silently lands as "no" understates
  * the one metric §9 actually rests on.
  */
-import { existsSync, appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -194,11 +194,34 @@ function record(opts) {
     note: opts.note ?? "",
   };
   mkdirSync(dirname(LOG), { recursive: true });
-  appendFileSync(
-    LOG,
-    JSON.stringify(Object.fromEntries(FIELDS.map((f) => [f, row[f] ?? ""]))) + "\n",
-    "utf8",
-  );
+  // A re-record replaces the row, so it may only ADD to what the first one knew:
+  // re-running --record after --verify without retyping every flag must not erase
+  // a judgement that was already made, or file a real bug as a constructed fixture.
+  const prior = read().find((r) => r.case_id && r.case_id === row.case_id);
+  if (prior) {
+    // `provenance` arrives defaulted rather than blank, so it needs naming:
+    // inheriting it keeps a real bug real when someone re-logs with no flags.
+    if (opts.provenance === undefined) row.provenance = prior.provenance || row.provenance;
+    for (const f of FIELDS)
+      if (f !== "recorded_at" && f !== "provenance" && (row[f] ?? "") === "" && prior[f] != null)
+        row[f] = prior[f];
+  }
+  const line = JSON.stringify(Object.fromEntries(FIELDS.map((f) => [f, row[f] ?? ""]))) + "\n";
+  // One row per case id, rewritten in place — the store's own rule, for the same
+  // reason: re-logging an investigation after `--verify` ran must refresh it, not
+  // count it twice. A line this tool cannot parse is nobody's case id, so it stays.
+  const kept = (existsSync(LOG) ? readFileSync(LOG, "utf8") : "")
+    .split(/\r?\n/)
+    .filter((l) => l.trim())
+    .filter((l) => {
+      try {
+        return !row.case_id || JSON.parse(l).case_id !== row.case_id;
+      } catch {
+        return true;
+      }
+    })
+    .join("\n");
+  writeFileSync(LOG, (kept ? kept + "\n" : "") + line, "utf8");
   console.log(
     JSON.stringify(
       {

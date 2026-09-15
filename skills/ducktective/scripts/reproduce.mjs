@@ -208,13 +208,30 @@ export function isLocalFile(file) {
     !isAbsoluteLike(file) &&
     !file.startsWith("../") &&
     !/^[<[/.]*[<[]/.test(file) &&
-    !/^[<[]/.test(file)
+    !/^[<[]/.test(file) &&
+    // site-packages and node_modules are inside the directory and outside the
+    // project: they are the runner's plumbing, so they neither lead nor prove.
+    !VENDORED.test("/" + (file ?? ""))
   );
 }
 
 function v8FnName(raw) {
   return (raw ?? "<anonymous>").replace(/^\S+\s+/, "").replace(/^async\s+/, "");
 }
+
+/** Vendored code that happens to live inside the checkout. */
+const VENDORED =
+  /(^|[\\/])(?:node_modules|\.venv|venv|\.tox|\.nox|site-packages|__pycache__|vendor|node_modules[\\/].*)(?:[\\/]|$)/;
+
+/**
+ * A test's own address, as pytest prints it in a summary line: `path.py::Class::test`.
+ *
+ * A warning escalated to an error reports its origin inside `_pytest/python.py`, so
+ * the traceback holds no frame in the user's repo even though the named test IS this
+ * repo's. Without this, a genuine reproduction of that class of failure reads as
+ * "nothing landed inside this repo".
+ */
+export const TEST_NODEID = /[\w./\\-]+\.py(?:::[\w.[\]-]+){1,}/;
 
 /**
  * Frames nearest the fault first.
@@ -285,7 +302,11 @@ export function coveredSites(failing, passing, cap = 40) {
     const lines = data?.executed_lines ?? data?.lines ?? [];
     const hitByPass = new Set(base[file]?.executed_lines ?? base[file]?.lines ?? []);
     for (const line of passing ? lines.filter((l) => !hitByPass.has(l)) : lines) {
-      sites.push({ file: toPosix(file), line, inside: !isAbsoluteLike(toPosix(file)) });
+      sites.push({
+        file: toPosix(file),
+        line,
+        inside: !isAbsoluteLike(toPosix(file)) && !VENDORED.test("/" + toPosix(file)),
+      });
       if (sites.length >= cap) return sites;
     }
   }
@@ -434,7 +455,7 @@ async function main() {
     notes.push(
       "the command passed, so the reported symptom did not occur; the ticket may be stale",
     );
-  } else if (local.length === 0 && localSites.length === 0) {
+  } else if (local.length === 0 && localSites.length === 0 && !TEST_NODEID.test(output)) {
     // A non-zero exit is only a reproduction if something in THIS repo failed.
     // Deciding that from *evidence* rather than from a list of error strings is
     // the point: a real repo I did not write (scientific-agent-skills) exited 2
