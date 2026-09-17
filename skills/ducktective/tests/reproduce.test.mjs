@@ -532,6 +532,56 @@ test("seedCandidates ranks local leads first and dependency frames last", () => 
   assert.equal(seedCandidates(frames, sites, 1, null).length, 1);
 });
 
+test("baseline-less coverage is recorded but never ranked as a candidate", (t) => {
+  // A coverage JSON with no baseline lists every executed line. Ranked, that is
+  // a five-lead inventory the model over-trusts; it must stay in
+  // `reproduction.covered` and contribute nothing to the candidate list.
+  const repo = mkdtempSync(join(tmpdir(), "dt-cov-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  writeFileSync(
+    join(repo, "app.py"),
+    "def total(rows):\n    s = 0\n    for r in rows:\n        s += r\n    return s\n\nassert total([1, 2, 3]) == 5\n",
+    "utf8",
+  );
+  writeFileSync(
+    join(repo, "cov-failing.json"),
+    JSON.stringify({ files: { "app.py": { executed_lines: [1, 2, 3, 4, 5, 7] } } }),
+    "utf8",
+  );
+  const { code, draft, stderr } = harness(
+    [
+      "--cmd",
+      `"${process.execPath}" app.py`,
+      "--cwd",
+      ".",
+      "--symptom",
+      "totals wrong",
+      "--coverage",
+      "cov-failing.json",
+      "--out",
+      join(repo, "draft.json"),
+    ],
+    repo,
+  );
+  assert.equal(code, 0, stderr);
+  // Line 5 (`return s`) is also executed; the inventory keeps it all, and the
+  // frame-derived candidate is the only lead.
+  assert.deepEqual(draft.reproduction.covered, [
+    { file: "app.py", line: 1 },
+    { file: "app.py", line: 2 },
+    { file: "app.py", line: 3 },
+    { file: "app.py", line: 4 },
+    { file: "app.py", line: 5 },
+    { file: "app.py", line: 7 },
+  ]);
+  // The traceback frame is line 7 (the assert); it is the only lead.
+  assert.deepEqual(
+    draft.candidates.map((c) => c.location),
+    ["app.py:1"],
+  );
+  assert.match(draft.notes, /recorded but not ranked/);
+});
+
 test("vendored code that ships inside the checkout neither leads nor proves", () => {
   // A real repo (WebPointCloud) filled all five candidate slots with
   // `.venv/Lib/site-packages/_pytest/*` and never named the failing test file:
@@ -552,6 +602,36 @@ test("vendored code that ships inside the checkout neither leads nor proves", ()
     "/repo",
   );
   assert.match(seedCandidates(frames, [], 5, null)[0].why, /outside this repo/);
+});
+
+test("compiler diagnostics locate the repo too", () => {
+  // Verbatim from `npm run typecheck` in a real repo (designer) on 2026-09-15.
+  // The gate refused that reproduction as "nothing landed inside this repo",
+  // because tsc writes `path(line,col):` where pytest writes `path:line:`.
+  const out = `  0% [0 / 1] [0 running]
+packages/three-d-preview/src/scale.test.ts(64,52): error TS2353: Object literal may only specify known properties, and 'cache' does not exist
+packages/three-d-preview/src/scale.test.ts(81,37): error TS2488: Type 'SpaceInput[] | undefined' must have a '[Symbol.iterator]()'
+Analyzing
+`;
+  const frames = parseFrames(out, "C:/Users/dev/designer");
+  assert.deepEqual(
+    frames.map((f) => `${f.file}:${f.line}`),
+    [
+      "packages/three-d-preview/src/scale.test.ts:64",
+      "packages/three-d-preview/src/scale.test.ts:81",
+    ],
+  );
+  assert.equal(
+    frames.every((f) => f.inside),
+    true,
+  );
+  // Noise must not wear the costume: a progress line, and a diagnostic in a file
+  // outside the repo, are not leads.
+  assert.deepEqual(parseFrames("  45% [1 / 2] [3 running]", "/repo"), []);
+  assert.equal(
+    parseFrames("C:/Python314/lib/site.py(9,1): error TS1: nope", "/repo")[0].inside,
+    false,
+  );
 });
 
 test("a pytest nodeid names this repo even when the traceback does not", () => {

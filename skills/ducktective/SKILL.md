@@ -13,33 +13,45 @@ You are not the localizer, the graph engine, or the fixer. You are a prosecutor 
 
 1. Reproduce first. No exceptions. Run the exact failing command / test. Capture exit, stdout, stderr, stack, and coverage if available.
 2. If it does not fail, write `status: does_not_reproduce` and **stop**. Do not "improve" the code. Do not suggest refactors. The ticket may be stale.
-3. Cap candidates at 3–5. Default sources: stack frames + lines covered by the failing run and not by passing runs. If your host has a code-graph tool, run it once and add its hits as candidates yourself — Ducktective ships none. Never more than five.
+3. Cap candidates at 3–5. Default sources: stack frames + lines covered by the failing run and not by passing runs, and — if the bug is a regression, i.e. some older commit passed — the commit `bisect.mjs` blames. If your host has a code-graph tool, run it once and add its hits as candidates yourself — Ducktective ships none. Never more than five. A bisected commit outranks a guessed one: it is a fact obtained by search, not an opinion about a traceback.
 4. For each candidate, in order:
    - One-line hypothesis: "this function should return X under condition Y, but the failing run shows Z."
    - The smallest possible check (assertion, existing test, or a 5-line script) that would **disprove** the hypothesis.
    - Run the check.
    - Oracle holds → `falsified`. Demote. Next candidate.
    - Oracle fails in the predicted way → `confirmed`. Stop. That is the cause.
-5. A check that also fails on a known-good path is a bad check. Prefer oracles that distinguish failing from passing.
+5. A check that also fails on a known-good path is a bad check, and a check whose
+   outcome does not move when the accused line is neutered never touched that line.
+   Rule 5 cuts both ways: `confirmed` needs a receipt — a `--control` that passed or a
+   `--probe` that flipped — not just an agreement with your own prediction. Prefer
+   oracles that distinguish failing from passing.
 6. Never confirm a cause in prose. Never skip the check because the hypothesis "looks obvious."
 7. Do not write a production patch until a cause is `confirmed`. A suggested patch is optional and labeled secondary.
 8. Always emit the case file below. Never free-prose as the final answer.
 
 ## Tools
 
+- **`check.mjs`** composes reproduction, optional bisect, an explicit claim check,
+  probe and re-run into one evidence table. Use `--claim "file:line explanation"`
+  and `--repro "command"`; add `--check "command" --predict pass|fail` to test the
+  claim. Review the dry-run plan, then pass `--yes`. Its letter grade measures
+  evidence completeness, not the probability that the cause is correct. A bisect
+  hunk miss is not a disproof of an older defect exposed by a newer change.
+
 Zero-dependency scripts in `scripts/` do the parts that must not be improvised:
 
 ```bash
 node scripts/reproduce.mjs --cmd "python -m pytest -q" --symptom "<what was reported>" --out .ducktective/draft.json
-node scripts/query_memory.mjs --symptom "<what was reported>"
-node scripts/run_check.mjs --file .ducktective/draft.json --candidate 1 --predict fail --yes
+node scripts/bisect.mjs --cmd "python -m pytest -q" --claim app.py:41 --budget 300 --yes   # only if it is a regression
+node scripts/run_check.mjs --file .ducktective/draft.json --candidate 1 --predict fail --probe --yes
 node scripts/write_case.mjs --file .ducktective/draft.json
 ```
 
 - **`reproduce.mjs`** — the gate. Exit 0 = reproduced (continue); 1 = does not reproduce (**stop**); 2 = the command never ran, timed out, or failed before executing anything in this repo, which is not a verdict. It fills `reproduction` from a real run and seeds `candidates` from the traceback, nearest fault first, plus fail-only coverage when you pass `--coverage` / `--baseline`. Leads from outside the repo rank last. It does not hypothesize: that is your job.
+- **`bisect.mjs`** — the only tool here that produces information the host did not already have. Give it the reproducing command and it walks history with `git rev-list` + a binary search (O(log n) runs), returning the first bad commit, the files and hunk ranges it touched, and whether your `--claim` sits inside one of them — `claim_in_commit: yes|no|n-a`. It finds a good ancestor by doubling back (`HEAD~1,2,4…`) and reports `no-good-ref` when nothing older passed, because a bug that was always there is not a regression and bisect cannot answer it. It prices the walk first (`measured_run_ms`, `estimated_runs`) and refuses above `--budget`; nothing moves without `--yes`. It runs in **your working tree** (a scratch worktree would not have the untracked `.venv` / `node_modules` the repro needs), so it refuses a dirty tree and restores your branch afterwards. Exit 0 found · 1 refused · 2 inconclusive · 3 dry run.
 - **`run_check.mjs --verify`** — re-executes a decided candidate's own oracle and records whether it survived, without letting the second run rewrite the claim. A `confirmed` whose `verified_verdict` says `falsified` cannot be stored: a claim that fell over on re-test is not a finding.
-- **`query_memory.mjs`** — the rap sheet: nearest past cases from the store, by keyword overlap (no embeddings, no server). Read its output before you localize; a similar old case is a head start, never a verdict.
-- **`run_check.mjs`** — executes the oracle and decides the verdict by arithmetic: `--predict fail` with a non-zero exit is `confirmed`; `--predict fail` with exit 0 is `falsified` (the oracle held, demote). It refuses a candidate with no hypothesis, one that already has a verdict, and any candidate ahead of an unfinished one — and an `inconclusive` lead (timed out, unrunnable, control also failed) does not count as tried hard, so the next one stays shut unless you pass `--escalate`. That is the "one candidate hard before escalating" rule, enforced. `--control <cmd>` names a known-good path; when the control fails too the verdict is `inconclusive`, because a check that breaks everywhere distinguishes nothing (rule 5). Once a candidate is `confirmed` the next one is refused too — the doc says confirmed means stop — and `--depth 1` forbids escalation outright. **Nothing runs without `--yes`**, and this is **not a sandbox** — it is a model-written command in your repo, printed in full first so a human reads it. Exit 3 = dry run; exit 1 also covers a draft whose `id` could not be a safe filename.
+- **`--probe`** closes the hole the prediction and the control both leave open. A matching `--predict` proves the check _agrees_ with the hypothesis and a passing `--control` proves it is not always-fail; neither proves the outcome depends on the line being accused — an always-pass oracle will confirm any prediction, with full provenance, and `write_case.mjs` used to file it. So `--probe` checks out a scratch `git worktree` at HEAD, comments the accused line out there, and re-runs the same check. Outcome changed → the check depends on that line. Unchanged → **`inconclusive_vacuous`**, which is not a weaker `confirmed`: it says the check was never about the suspect. The line is deleted, not aborted before, because a check that already fails keeps failing when the code above it dies — that strategy calls every failing check vacuous. And a deletion that breaks the parse or leaves a name undefined is reported `not-run`: "crashed differently" is not "behaved the same". The worktree has no untracked source and no installed dependencies, so the unmutated worktree run is compared against the recorded outcome first; if they disagree, the probe refuses to conclude rather than measuring the environment. Your tree is never written to, and a candidate whose file has uncommitted edits is refused.
+- **`run_check.mjs`** — executes the oracle and decides the verdict by arithmetic: `--predict fail` with a non-zero exit is `confirmed`; `--predict fail` with exit 0 is `falsified` (the oracle held, demote). It refuses a candidate with no hypothesis, one that already has a verdict, and any candidate ahead of an unfinished one — and an `inconclusive` or `inconclusive_vacuous` lead (timed out, unrunnable, control also failed, or a probe showing the check never touched the line) does not count as tried hard, so the next one stays shut unless you pass `--escalate`. That is the "one candidate hard before escalating" rule, enforced. `--control <cmd>` names a known-good path; when the control fails too the verdict is `inconclusive`, because a check that breaks everywhere distinguishes nothing (rule 5). A `confirmed` now owes a receipt of that kind: a passed `--control` or a flipped `--probe`. Prediction-plus-exit-code alone only proves the check agreed, and an always-pass oracle agrees with anything. Once a candidate is `confirmed` the next one is refused too — the doc says confirmed means stop — and `--depth 1` forbids escalation outright. **Nothing runs without `--yes`**, and this is **not a sandbox** — it is a model-written command in your repo, printed in full first so a human reads it. Exit 3 = dry run; exit 1 also covers a draft whose `id` could not be a safe filename.
 - **`write_case.mjs`** — the store, and therefore the enforcement point. It refuses a verdict with no recorded exit code, a verdict that contradicts its own exit code, candidates that survived a non-reproducing run, strong confidence or a patch before a confirmed cause, more than five candidates, and unknown fields. A refusal means the investigation is wrong — fix the investigation, not the JSON.
 
 ## Case file (mandatory)
@@ -74,13 +86,14 @@ Write the same object to `.ducktective/cases.jsonl` in the repo (create the dir)
 
 ## Memory
 
-At the start of an investigation, ask the repo what it already knows:
+`.ducktective/cases.jsonl` is the record, and it stays readable: `cat` it, grep it, open
+`cases/DT-*.md`. A past `confirmed` is a head start, never a verdict — it does not skip the
+reproduction gate for the case in front of you.
 
-```bash
-node scripts/query_memory.mjs --symptom "<what was reported>" --locations app.py:7 --file .ducktective/draft.json
-```
-
-It ranks `.ducktective/cases.jsonl` by token overlap on symptom + locations and prints the 2–3 nearest. Paste those lines into the new case's `notes` as "rap sheet" — a repeat offender is a head start, not a conclusion, so a past `confirmed` never skips the reproduction gate for the case in front of you. Do not build a knowledge graph, an index, or an embeddings cache.
+The rap-sheet ranking that used to sit on top of it (`query_memory.mjs`) is retired: the
+store has five rows in it, all from the author, and no measurement has ever shown that
+surfacing "nearest previous case" changed a decision. Re-add it when a benchmark shows the
+effect, not before.
 
 ## Speed
 

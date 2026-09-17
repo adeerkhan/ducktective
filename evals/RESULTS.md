@@ -136,5 +136,6 @@ that ingest path had only ever seen hand-written JSON.
   that contradicts either), but the number needs a model proposing the hypotheses.
 
 Both of the first two are Days 11–12 of the plan and are yours to run; `npm run eval`
-is the part that can be automated, and it is in CI's lane if you want it wired into
-`deploy-site.yml`.
+is the part that can be automated, and it runs in CI's only lane — `eval.yml`.
+This snapshot is dated above and deliberately not updated in place; the live counts
+come from `node evals/runlog.mjs --report`.

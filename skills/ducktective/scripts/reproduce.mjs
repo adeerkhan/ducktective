@@ -57,6 +57,17 @@ const PYTEST_ASSERT = /^\s*(?:={3,}\s+)?E\s+(\S.*)$/;
  */
 const LOC_FRAME = /^(\S+?\.(?:py|js|ts|tsx|jsx|mjs|cjs)):(\d+)(?::\s*(.*))?$/;
 /**
+ * Compiler and linter diagnostics: `src/app.test.ts(64,52): error TS2353: …`,
+ * the form `tsc`, `vue-tsc`, webpack and ESLint's stylish reporter all print.
+ * The comma instead of a colon is the whole difference, and it cost a real
+ * reproduction: `npm run typecheck` failing on four named lines in the user's
+ * repo was filed as "nothing landed inside this repo" and the gate refused the
+ * investigation. Same shape as the pytest lesson — a runner that reports the
+ * spot in one line is not a runner that printed no traceback because nothing
+ * failed.
+ */
+const DIAG_FRAME = /^(\S+?\.(?:py|js|ts|tsx|jsx|mjs|cjs))\((\d+)(?:,\d+)?\):\s+\S.*$/;
+/**
  * The runner never started collecting: typo'd path, stale test name, unimportable
  * module, bad flag. All of them exit non-zero, and reading that as a
  * "reproduction" is how a garbage command becomes a confident wrong answer.
@@ -269,6 +280,13 @@ export function parseFrames(output, cwd = "") {
           line.trim(),
         ),
       );
+      continue;
+    }
+    const diag = DIAG_FRAME.exec(line.trim());
+    if (diag) {
+      // The message itself is kept verbatim in `stack`; a candidate id is a
+      // location, not a copy of the diagnostic.
+      loc.push(frame(repoRelative(diag[1], cwd), Number(diag[2]), "<module>", line.trim()));
     }
   }
   // A pytest location line already names the failing spot, so its order is right;
@@ -290,8 +308,9 @@ export function parseAssertion(output) {
  *
  * Failing-run lines that a passing run never touched are the strongest cheap
  * localization signal there is, which is why `--baseline` is worth the extra
- * command. Without a baseline every executed line is reported, which is noise
- * the model will over-trust — so the draft says so in `notes`.
+ * command. `passing: null` returns every executed line — an inventory of the
+ * run, not a localization signal — so the caller only uses that shape to record
+ * `reproduction.covered`; baseline-less sites never reach candidate seeding.
  */
 export function coveredSites(failing, passing, cap = 40) {
   if (!failing) return [];
@@ -397,6 +416,10 @@ export function seedCandidates(frames, sites, maxCandidates, assertion) {
   // Leads inside the repo first, dependency/runtime frames last: a traceback that
   // only touches site-packages is a clue about the environment, not the bug.
   for (const f of frames) if (f.inside) add(`${f.file}:${f.line}`, "stack", f.fn);
+  // Coverage sites arrive here only when a passing-run baseline made them
+  // fail-only (main filters the rest): a line the failing run alone executed is
+  // a localization signal; a line any run executes is an inventory of the run,
+  // and inventories do not become candidates.
   for (const s of sites) if (s.inside !== false) add(`${s.file}:${s.line}`, "coverage", null);
   for (const f of frames) if (!f.inside) add(`${f.file}:${f.line}`, "external", f.fn);
   return [...byLoc.values()].slice(0, maxCandidates).map((c, i) => ({
@@ -429,7 +452,14 @@ async function main() {
   const frames = parseFrames(output, opts.cwd);
   const assertion = parseAssertion(output);
   const coverage = readJson(opts.coverage);
-  const sites = coveredSites(coverage, readJson(opts.baseline));
+  const baseline = readJson(opts.baseline);
+  // Two roles, kept apart: `covered` records what the failing run executed
+  // (with or without a baseline — the human may still want the inventory), while
+  // only *fail-only* sites, those a passing run never touched, are evidence for
+  // candidate seeding. Baseline-less coverage is an inventory, not a signal, so
+  // it is recorded but never ranked.
+  const coveredAll = coverage ? coveredSites(coverage, null) : [];
+  const sites = coverage && baseline ? coveredSites(coverage, baseline) : [];
   const local = frames.filter((f) => f.inside);
   const localSites = sites.filter((s) => s.inside !== false);
 
@@ -479,9 +509,15 @@ async function main() {
   // rule 2), so the draft stops instead of tempting the next step.
   const candidates =
     outcome === "reproduced" ? seedCandidates(frames, sites, opts.maxCandidates, assertion) : [];
-  if (outcome === "reproduced" && coverage && !opts.baseline) {
+  // Coverage without a passing baseline is an inventory of the run, not a
+  // localization signal: without a diff there is no reason to believe a covered
+  // line has anything to do with the fault. Warning-and-ranking is illogical —
+  // the note says "weak evidence" while the candidate list treats it as leads.
+  // The sites are still recorded under `reproduction.covered` for a human and for
+  // a later --baseline re-run; they just no longer masquerade as candidates.
+  if (outcome === "reproduced" && coverage && !baseline) {
     notes.push(
-      "coverage has no passing-run baseline: every executed line is listed, so treat coverage as weak evidence",
+      "coverage has no passing-run baseline: executed lines recorded but not ranked — rerun with --baseline from a passing run to rank fail-only lines",
     );
   }
   if (outcome === "reproduced" && !coverage) {
@@ -505,7 +541,10 @@ async function main() {
       stderr: clip(result.stderr, opts.maxBytes),
       stack: frames.map((f) => f.raw),
       // `inside` is ranking metadata, not evidence — the schema rejects unknown keys.
-      covered: (localSites.length ? localSites : sites).map(({ file, line }) => ({ file, line })),
+      covered: (baseline && localSites.length ? localSites : coveredAll).map(({ file, line }) => ({
+        file,
+        line,
+      })),
     },
     candidates,
     confirmed_cause: null,

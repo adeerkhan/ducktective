@@ -199,8 +199,9 @@ function main() {
   nearest-fault ranking (throw site above its caller):     ${pct(ranked.length, repro.length)}  [${ranked.length}/${repro.length}]
   cases fully as expected:                                 ${pct(ok.length, run.length)}  [${ok.length}/${run.length}]
 
-  Not measured here: tokens per investigation vs a plain "fix this" prompt, and
-  whether a human prefers the case file — both need a host agent and a person.`);
+  Not measured here: whether the protocol beats a bare "fix this" prompt. That is a
+  comparison against a corpus with known answers, not a property of these fixtures —
+  see docs/ducktective-design.md §4. This corpus is a regression net, not evidence.`);
   process.exitCode = ok.length === run.length && run.length > 0 ? 0 : 1;
 }
 

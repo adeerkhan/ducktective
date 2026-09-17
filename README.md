@@ -1,7 +1,6 @@
 # Ducktective
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Deploy site](https://github.com/adeerkhan/ducktective/actions/workflows/deploy-site.yml/badge.svg)](https://github.com/adeerkhan/ducktective/actions/workflows/deploy-site.yml)
 [![Skill stress run](https://github.com/adeerkhan/ducktective/actions/workflows/eval.yml/badge.svg)](evals/RESULTS.md)
 [![Agent Skills](https://img.shields.io/badge/Standard-Agent_Skills-blueviolet.svg)](https://agentskills.io/)
 [![Node](https://img.shields.io/badge/Node-20.19%2B-green.svg)](skills/ducktective/scripts)
@@ -18,14 +17,18 @@ repo, run a server, need an API key, or take a dependency beyond Node's standard
 Ducktective, investigate this failing test.
 ```
 
-> **Honest status — 2026-09-14.** Ducktective has never confirmed a real bug in code it did
-> not write. The run log holds three investigations and zero reproductions; every `confirmed`
-> case so far was produced against a fixture authored for this repo. What is verified here is
-> _behaviour_, not _value_. The receipts are `npm test`, `npm run eval`, and
-> `node evals/runlog.mjs --report` — this file deliberately quotes no test counts, because a
-> number copied into prose starts rotting the moment someone adds a test.
+> **Honest status — 2026-09-16.** It has now confirmed two real bugs in code it did not
+> write (a vacuous 3DGS overflow probe; a committed debug leftover that breaks
+> `npm run typecheck` while the suite runs green), both on the first candidate, both
+> surviving `--verify`. That is a demonstration, not a rate. **The discovery claim is dead
+> as a selling point:** both were findable by running the repo's own commands, and no
+> benchmark has ever shown this protocol beats a bare "fix this" prompt. What is verified
+> here is _behaviour_ and one design property — a verdict cannot be filed unless a check
+> that ran agrees with a prediction **and** the check demonstrably depends on the line
+> being accused. The receipts are `npm test`, `npm run eval` and
+> `node evals/runlog.mjs --report`; this file quotes no test counts, because a number
+> copied into prose starts rotting the moment someone adds a test.
 
-**Site:** <https://adeerkhan.github.io/ducktective/> ·
 **Skill:** [`skills/ducktective/SKILL.md`](skills/ducktective/SKILL.md) ·
 **Design:** [`docs/ducktective-design.md`](docs/ducktective-design.md) ·
 **Architecture:** [`docs/architecture.md`](docs/architecture.md)
@@ -44,20 +47,17 @@ node skills/ducktective/bin/install.mjs --target claude
 | Target            | Installs to                                                                |
 | ----------------- | -------------------------------------------------------------------------- |
 | `--target claude` | `~/.claude/skills/ducktective`                                             |
-| `--target codex`  | `~/.agents/skills/ducktective` — Codex scans `.agents/skills`              |
-| `--target agents` | `.agents/skills/ducktective` in the current repo                           |
 | `--dest <dir>`    | anywhere else — Cursor, Copilot, Gemini CLI, anything reading a `SKILL.md` |
+
+`claude` is the only named target: it is the one scan path checked against documentation
+and used on a real machine. The `codex` and `agents` targets were removed on 2026-09-15 —
+a guessed destination costs a test to keep honest and installs nothing if it is wrong —
+and `--target` now refuses those names instead of accepting them. Everything else takes
+`--dest`, which was always the general case.
 
 The installer copies `SKILL.md`, the case-file schema, and `scripts/` — never the tests or
 itself. It **refuses to overwrite a skill file you have edited** (`--force` to mean it),
 `--dry-run` prints the plan, and re-running an unchanged install writes nothing.
-
-Or as a Claude Code plugin, from this repo's own catalog:
-
-```text
-/plugin marketplace add adeerkhan/ducktective
-/plugin install ducktective@ducktective
-```
 
 Manual: copy `SKILL.md`, `case-file.schema.json` and `scripts/` into your agent's skill
 folder. Take all three — a `SKILL.md` without its scripts is the rules as advice again.
@@ -129,12 +129,19 @@ use them directly.
 **`reproduce.mjs`** — the gate. Runs the command, parses the traceback, seeds candidates.
 `0` reproduced · `1` does not reproduce (**stop**) · `2` the command never ran.
 
-**`query_memory.mjs`** — the rap sheet: nearest past cases by keyword overlap. No
-embeddings, no server. `0` always (an empty store is a normal day) · `2` bad args.
+**`bisect.mjs`** — the one tool that finds something the agent did not already know. Give
+it the reproducing command and it walks history by binary search (O(log n) runs) and
+returns the first bad commit, the hunks it touched, and whether your `--claim` sits inside
+them. It prices the walk before running it and refuses above `--budget`; a bug with no
+green ancestor is not a regression and gets `no-good-ref` rather than a guess.
+`0` found · `1` refused · `2` inconclusive · `3` dry run.
 
 **`run_check.mjs`** — executes the oracle and decides `confirmed`/`falsified` from
-`--predict` against the real exit code. `--control` proves the check can distinguish
-anything; `--escalate` and `--depth 1` govern whether a second candidate may be touched;
+`--predict` against the real exit code. `--control` proves it can fail somewhere
+(otherwise it proves nothing); `--probe` proves its outcome depends on the accused line, by
+deleting that line on a scratch worktree and re-running — no change means the check was
+never about the suspect, and the verdict becomes `inconclusive_vacuous`. Agreement with your
+own prediction is not confirmation; `--escalate` and `--depth 1` govern whether a second candidate may be touched;
 `--verify` re-runs a decided claim in a new process and records whether it survived.
 `0` recorded · `1` refused · `2` not evaluable · `3` dry run.
 
@@ -189,9 +196,10 @@ control: exit 0 in 40 ms
 always one past the last index
 ```
 
-The JSONL is machine-readable on purpose: another skill can read the same file. Open one in
-the browser at [`/cases`](https://adeerkhan.github.io/ducktective/cases) — it parses
-locally and nothing is uploaded.
+The JSONL is machine-readable on purpose: another skill can read the same file, and `cat`
+or `grep` is the reader. There is no website to open it in — the demo site was deleted on
+2026-09-15, because rendering an unvalidated claim in five routes and a browser re-
+implementation of the spine was maintenance surface, not evidence.
 
 ---
 
@@ -240,35 +248,35 @@ not a feature's. See [design §8–§9](docs/ducktective-design.md).
 ```
 skills/ducktective/     the product
   SKILL.md              the whole contract, in one file
-  case-file.schema.json shape of a case file (the site validates against it)
+  case-file.schema.json shape of a case file
   scripts/              the four tools + lib/ (case file, exec, flag args)
   bin/install.mjs       the installer
   tests/                tool tests + Python and node:test fixtures
-site/                   static marketing + demo (Vite, React, TanStack Router) → Pages
-docs/                   design doc, architecture reference, prior-art critique
+docs/                   design (v2, the redirection), architecture reference,
+                        prior-art critique, and the objection this project was
+                        judged against, kept verbatim
 evals/                  behaviour corpus, runner, results, run ledger
-scripts/                repo-level guards
-.github/workflows/      deploy-site.yml (Pages), eval.yml (the corpus)
+scripts/                repo-level guards (single source, run log)
+.github/workflows/      eval.yml — the corpus, on real pytest and coverage.py
 ref/                    gitignored research clones, never imported
 ```
 
-`skills/` and `site/` are peers. The site is a _presentation_ of the skill: it imports the
-same `SKILL.md` rather than pasting a copy, and a guard fails the build if the two diverge.
+One deliverable, and the repo is smaller for it. The website, the npm workspace, the
+plugin manifests and two installer targets were deleted on 2026-09-15: presentation
+built before the claim it was presenting had any evidence behind it. If a page comes
+back, it comes back with a benchmark table to render.
 
 ## Development
 
 ```bash
-npm install        # once, at the root (npm workspaces → site/)
-npm run dev        # http://localhost:8080/ducktective/
+npm install        # once: eslint + prettier, that is all
 npm test           # guards + the skill's tool tests
 npm run eval       # the behaviour corpus (needs pytest + coverage.py)
-npm run build      # static output in site/dist, incl. 404.html + skill/SKILL.md
-npm run typecheck && npm run lint
+npm run lint && npm run format:check
 ```
 
-The site is static by design: GitHub Pages runs no server, so there is no server function,
-no database, and no auth — the whole workbench executes in the browser. `SITE_BASE`
-overrides the deploy prefix.
+No dev/build/preview/typecheck. The scripts are plain `.mjs` with zero dependencies, so
+`node --check` and the test suite are the type layer, and nothing needs deploying.
 
 ---
 
@@ -305,8 +313,7 @@ place nobody runs a test.
 ## Prior art and sources
 
 The design came out of reading published agent pipelines and their measured results;
-[docs/ref-work.md](docs/ref-work.md) is the full critique. Figures quoted on the
-[`/protocol`](https://adeerkhan.github.io/ducktective/protocol) page carry a source and a
+[docs/ref-work.md](docs/ref-work.md) is the full critique. Figures quoted in the docs carry a source and a
 check date — e.g. arXiv:2603.25764 (a SWE-bench-style study where submissions reached 100%
 while resolution sat near 44%, with most failures silent and semantic) and arXiv:2503.09089
 (LocAgent, Acc@5 ≤ 92.7% on SWE-Bench-**Lite**) — both verified 2026-09-12. Star counts

@@ -32,6 +32,8 @@ const caseFile = {
       check: 'python -c "from app import total; total([1,2,3,4])"',
       predicted: "fail",
       check_exit_code: 1,
+      control: 'python -c "import app"',
+      control_exit_code: 0,
       verdict: "confirmed",
       evidence: "IndexError: list index out of range",
     },
@@ -88,6 +90,83 @@ test("an unknown field is refused rather than silently dropped", () => {
     const run = store({ ...caseFile, confidance: "high" }, repo);
     assert.equal(run.status, 1);
     assert.match(run.stderr, /unknown property "confidance"/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+const PASS_ORACLE = {
+  ...caseFile,
+  id: "DT-260101-02",
+  candidates: [
+    {
+      ...caseFile.candidates[0],
+      predicted: "pass",
+      check_exit_code: 0,
+      probe_flipped: "yes",
+      probe: "neutered on a scratch worktree",
+      verdict: "confirmed",
+    },
+  ],
+};
+
+test("a pass-prediction confirmation is refused without a flipped probe", () => {
+  const repo = mkdtempSync(join(tmpdir(), "dt-cli-"));
+  try {
+    const noProbe = {
+      ...PASS_ORACLE,
+      candidates: [{ ...PASS_ORACLE.candidates[0], probe_flipped: undefined }],
+    };
+    const refused = store(noProbe, repo);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /pass.*flipped probe|probe_flipped/);
+    const accepted = store(PASS_ORACLE, repo);
+    assert.equal(accepted.status, 0, accepted.stderr);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("a confirmed verdict with a non-flip or failed control is refused", () => {
+  const repo = mkdtempSync(join(tmpdir(), "dt-cli-"));
+  try {
+    const noFlip = {
+      ...PASS_ORACLE,
+      candidates: [{ ...PASS_ORACLE.candidates[0], probe_flipped: "no", verdict: "confirmed" }],
+    };
+    const run1 = store(noFlip, repo);
+    assert.equal(run1.status, 1);
+    assert.match(run1.stderr, /non-flip/);
+    const failedControl = {
+      ...PASS_ORACLE,
+      candidates: [
+        { ...PASS_ORACLE.candidates[0], control_exit_code: 1, control: 'python -c "import app"' },
+      ],
+    };
+    const run2 = store(failedControl, repo);
+    assert.equal(run2.status, 1);
+    assert.match(run2.stderr, /control command also failed/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("a labelled non-flip is stored without being forced into a confirmed verdict", () => {
+  const repo = mkdtempSync(join(tmpdir(), "dt-cli-"));
+  try {
+    const c = {
+      ...caseFile,
+      status: "unverified",
+      confirmed_cause: null,
+      confidence: "low",
+      leading_hypothesis: "not yet isolated",
+      candidates: [
+        { ...caseFile.candidates[0], verdict: "inconclusive_vacuous", probe_flipped: "no" },
+      ],
+    };
+    const result = store(c, repo);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(readFileSync(JSON.parse(result.stdout).markdown, "utf8"), /inconclusive_vacuous/);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

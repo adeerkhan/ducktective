@@ -15,7 +15,7 @@
  * a SKILL.md differs is that someone tuned it for their repo.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -31,22 +31,21 @@ const SKILL_NAME = "ducktective";
 const IGNORE = new Set(["tests", "bin", "__pycache__", ".pytest_cache"]);
 
 /**
- * Verified destinations, not guesses:
- *   Claude Code — ~/.claude/skills/<name> (its documented skill folder).
- *   Codex       — $HOME/.agents/skills and $CWD/.agents/skills, per
- *                 developers.openai.com/codex/skills. There is no
- *                 ~/.codex/skills scan, which is why `agents` (project) and
- *                 `codex` (user) share the `.agents/skills` base.
- * Anything else (Cursor, Copilot, Gemini CLI) takes --dest.
+ * One verified destination, plus an escape hatch.
+ *
+ * Claude Code reads ~/.claude/skills/<name>; that is the only target whose scan
+ * path has been checked against documentation and used on a real box. Codex's
+ * `.agents/skills` and a project-local `.agents/skills` were wired up here for a
+ * demand that has never appeared — every guess costs a test to keep honest, so
+ * they went, and anything else (Cursor, Copilot, Gemini CLI) takes --dest, which
+ * was always the general case.
  */
 const TARGETS = {
   claude: () => join(homedir(), ".claude", "skills", SKILL_NAME),
-  codex: () => join(homedir(), ".agents", "skills", SKILL_NAME),
-  agents: () => join(process.cwd(), ".agents", "skills", SKILL_NAME),
 };
 
-const USAGE = `usage: install.mjs [--target claude|codex|agents] [--dest DIR] [--source DIR] [--force] [--dry-run]
-  --target NAME     claude (~/.claude/skills) | codex (~/.agents/skills) | agents (./.agents/skills)
+const USAGE = `usage: install.mjs [--target claude] [--dest DIR] [--source DIR] [--force] [--dry-run]
+  --target claude   ~/.claude/skills/ducktective (the only scan path verified here)
   --dest DIR        an explicit directory; wins over --target
   --force           overwrite files whose contents differ
   --dry-run         print the plan, write nothing`;
@@ -157,6 +156,17 @@ async function main() {
     }
   }
 
+  // A tool retired upstream stays installed forever otherwise: the installer only
+  // adds and updates, so `query_memory.mjs` outlived its own deletion and a host
+  // agent would keep finding — and calling — a script the docs no longer describe.
+  // Reported always; removed only with --force, because a file in the install
+  // folder might be somebody's own addition.
+  const want = new Set(files);
+  const stale = [];
+  for (const rel of listInstalled(opts.dest)) if (!want.has(rel)) stale.push(rel);
+  if (stale.length && opts.force && !opts.dryRun)
+    for (const rel of stale) rmSync(join(opts.dest, rel), { force: true });
+
   const conflicts = plan.filter((p) => p.action === "CONFLICT");
   if (conflicts.length) {
     console.error(`\nRefusing to overwrite ${conflicts.length} file(s) you have changed:\n`);
@@ -178,6 +188,8 @@ async function main() {
         tools: files
           .filter((f) => f.startsWith("scripts/") && !f.includes("lib/"))
           .map((f) => f.split("/").pop()),
+        stale,
+        stale_removed: stale.length && opts.force && !opts.dryRun ? stale : [],
       },
       null,
       2,
@@ -196,6 +208,22 @@ if (process.argv[1] && pathToFileURL(realpathOr(process.argv[1])).href === impor
     console.error(`[ducktective] install failed: ${err.message}`);
     process.exitCode = 2;
   });
+}
+
+/** Every file currently installed under `dest`, in the same relative form `skillFiles` uses. */
+function listInstalled(dest) {
+  if (!existsSync(dest)) return [];
+  const out = [];
+  const walk = (dir, rel) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = join(dir, entry.name);
+      const r = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(abs, r);
+      else out.push(r);
+    }
+  };
+  walk(dest, "");
+  return out;
 }
 
 /** node realpaths `import.meta.url` but leaves argv[1] as typed; compare like for like. */

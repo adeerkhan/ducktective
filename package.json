@@ -3,14 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "site"
-  ],
   "scripts": {
-    "dev": "npm run dev -w site",
-    "build": "npm run build -w site",
-    "preview": "npm run preview -w site",
-    "typecheck": "npm run typecheck -w site",
     "test": "node --test \"scripts/*.test.mjs\" \"skills/**/*.test.mjs\"",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -21,11 +14,7 @@
     "@eslint/js": "^9.20.0",
     "eslint": "^9.20.0",
     "eslint-config-prettier": "^10.1.1",
-    "eslint-plugin-react-hooks": "^5.2.0",
-    "eslint-plugin-react-refresh": "^0.4.20",
-    "globals": "^15.15.0",
-    "prettier": "^3.4.0",
-    "typescript-eslint": "^8.56.1"
+    "prettier": "^3.4.0"
   },
   "engines": {
     "node": ">=20.19"

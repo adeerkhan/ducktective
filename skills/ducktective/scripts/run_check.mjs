@@ -31,8 +31,10 @@
  * rather than pretend to be an oracle.
  */
 import { numFlag } from "./lib/args.mjs";
-import { existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { CASE_ID, clip, repoRoot, SCHEMA, validateSchema, writeAtomic } from "./lib/case-file.mjs";
 import { run, wasNotRunnable } from "./lib/exec.mjs";
@@ -45,6 +47,9 @@ const USAGE = `usage: run_check.mjs --file DRAFT.json --candidate RANK|LOCATION 
   --depth N            highest candidate rank this run may touch (default 2; 1 = never escalate)
   --verify             re-execute a decided candidate's own check and report whether it survives
   --lang py|js|sh      how to run a multi-line check (default: sniff the shebang)
+  --probe              neuter the accused line on a scratch worktree and re-run the
+                       check; if the outcome does not change the check never
+                       depended on that line (inconclusive_vacuous)
   --cwd DIR            where to run (default: the draft's directory)
   --timeout MS         kill the whole tree after this long (default: 60000)
   --max-bytes N        evidence budget per stream (default: 4000)
@@ -100,7 +105,7 @@ function parseArgs(argv) {
     console.log(USAGE);
     return null;
   }
-  const bools = new Set(["--yes", "--rerun", "--keep", "--escalate", "--verify"]);
+  const bools = new Set(["--yes", "--rerun", "--keep", "--escalate", "--verify", "--probe"]);
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (!flag.startsWith("--")) throw new Error(`expected a --flag, got "${flag}"\n\n${USAGE}`);
@@ -171,6 +176,8 @@ function parseArgs(argv) {
     throw new Error(
       "--verify re-tests the recorded prediction; drop --predict so a second guess cannot move the answer",
     );
+  if (opts.verify && opts.cmd !== undefined)
+    throw new Error("--verify re-tests the recorded check; --cmd cannot replace it");
   return opts;
 }
 
@@ -206,6 +213,10 @@ export function blockers(candidates, index, { escalate = false } = {}) {
       out.push(
         `candidate ${c.rank ?? i + 1} ("${c.location}") came back inconclusive — that check never answered anything; re-run it, or pass --escalate to move past it knowingly`,
       );
+    } else if (c.verdict === "inconclusive_vacuous" && !escalate) {
+      out.push(
+        `candidate ${c.rank ?? i + 1} ("${c.location}") was inconclusive_vacuous — the check did not depend on the line accused, so that hypothesis was never tested; write a check that does, or --escalate`,
+      );
     } else if (c.verdict === "confirmed" && !escalate) {
       // Core Design step 3: "Confirmed → that is the root cause. Stop." Without
       // this, the gate only prevented escalating too early and happily allowed
@@ -229,7 +240,7 @@ export function blockers(candidates, index, { escalate = false } = {}) {
  * imports, and is deleted after the run unless `--keep` — the full source is
  * recorded in `check`, so the case file still replays.
  */
-export function materialize(check, { lang, repo, caseId, rank }) {
+export function materialize(check, { lang, repo, caseId, rank, dryRun = false }) {
   if (!check.includes("\n")) return { command: check, file: null };
   const sniffed = /^#!.*python/i.test(check)
     ? "py"
@@ -248,7 +259,7 @@ export function materialize(check, { lang, repo, caseId, rank }) {
       `draft id ${JSON.stringify(caseId)} is not a safe filename — fix the draft, do not run this check`,
     );
   const file = join(repo, `ducktective-check-${caseId}-${rank ?? 0}.${EXT[use]}`);
-  writeFileSync(file, check.endsWith("\n") ? check : check + "\n", "utf8");
+  if (!dryRun) writeFileSync(file, check.endsWith("\n") ? check : check + "\n", "utf8");
   const exe = use === "py" ? pythonFor(repo) : INTERPRETER[use];
   return { command: `"${exe}" "${file}"`, file };
 }
@@ -257,9 +268,26 @@ export function materialize(check, { lang, repo, caseId, rank }) {
  * One rule for the first run and for --verify, so a re-test cannot be graded on
  * a different scale than the claim it is checking.
  *
+ * Confirming takes a receipt. `predicted` matching proves the check AGREES, and
+ * a passing control proves it is not always-fail; neither proves it is not
+ * always-pass, and neither proves its outcome depends on the line being accused.
+ * Fail predictions retain control-or-probe compatibility. Pass predictions need
+ * a flipped probe: a passing control cannot distinguish an always-pass check.
+ * A flip detects sensitivity under this mutation, not proof the line is faulty.
+ * Falsification needs no receipt. A non-flip detects no sensitivity under this
+ * mutation, not proof the check never touched the line.
+ *
  * @param {"pass"|"fail"} predicted what the check must do if the hypothesis is true
+ * @param {{controlPassed?: boolean, probeFlipped?: boolean|null}} disc
+ *   `false` means a comparable probe did not flip; `null` means no valid probe.
  */
-export function classify(predicted, checkResult, controlResult, timeout = 0) {
+export function classify(
+  predicted,
+  checkResult,
+  controlResult,
+  timeout = 0,
+  { controlPassed = false, probeFlipped = null } = {},
+) {
   const notes = [];
   const inconclusive = (why) => {
     notes.push(why);
@@ -267,16 +295,193 @@ export function classify(predicted, checkResult, controlResult, timeout = 0) {
   };
   if (checkResult.timedOut)
     return inconclusive(`the check hung and its process tree was killed after ${timeout} ms`);
-  if (wasNotRunnable(checkResult))
+  if (wasNotRunnable(checkResult) || !Number.isInteger(checkResult.code))
     return inconclusive(
       "the check command could not be run at all — that is not evidence about the hypothesis",
     );
-  if (controlResult && controlResult.code !== 0)
+  if (
+    controlResult &&
+    (controlResult.code !== 0 || controlResult.timedOut || wasNotRunnable(controlResult))
+  )
     return inconclusive(
       "the control also failed, so this check does not distinguish the broken path from a known-good one (rule 5)",
     );
   const held = (predicted === "pass") === (checkResult.code === 0);
-  return { verdict: held ? "confirmed" : "falsified", notes };
+  if (!held) return { verdict: "falsified", notes };
+  if (probeFlipped === false)
+    return {
+      verdict: "inconclusive_vacuous",
+      notes: [
+        ...notes,
+        "the check's outcome did not change when the accused line was neutered — no sensitivity detected under this mutation; this is not proof the check never touched the line",
+      ],
+    };
+  if (predicted === "pass" && probeFlipped !== true)
+    return inconclusive(
+      "a pass prediction requires a flipped probe — re-run with --probe; a passed control alone cannot rule out an always-pass check",
+    );
+  if (!controlPassed && probeFlipped !== true)
+    return inconclusive(
+      "the check agreed with the prediction but has no discrimination receipt — re-run with --control or --probe (rule 5)",
+    );
+  if (probeFlipped === true)
+    notes.push(
+      "the flip detects sensitivity under this mutation, not proof the accused line is faulty",
+    );
+  return { verdict: "confirmed", notes };
+}
+
+/** `"app.py:41 totals()"` → `{file, line}`; null when the id is not a location. */
+export function accusedAt(location) {
+  const m = /^(\S+?):(\d+)\b/.exec(location ?? "");
+  return m ? { file: m[1], line: Number(m[2]) } : null;
+}
+
+/**
+ * The neuter: comment the accused line out, keep the program running.
+ *
+ * Aborting *before* the line (injecting a raise/throw) is the obvious strategy and
+ * the wrong one: a check that already fails keeps failing when the code above it
+ * dies, so an exit-code comparison reports "no change" about a line that mattered
+ * enormously. Deleting the line keeps the process alive, so the only way the
+ * outcome survives is that the line genuinely did not matter.
+ *
+ * ponytail: one strategy — line deletion. Construct-aware neighbours (sentinel
+ * return, inverted condition, perturbed constant) are the upgrade once a corpus
+ * shows deletion missing causes it cannot see.
+ */
+const NEUTER = {
+  py: (text) => `# dt-probe ${text}`,
+  js: (text) => `// dt-probe ${text}`,
+};
+const NEUTER_LANG = {
+  py: "py",
+  js: "js",
+  mjs: "js",
+  cjs: "js",
+  ts: "js",
+  tsx: "js",
+  jsx: "js",
+};
+/**
+ * A neuter that breaks the parse or leaves a name undefined never produced a
+ * comparable run. "It crashed differently" is not evidence that the line is
+ * irrelevant, so the probe reports not-run rather than calling the check vacuous.
+ */
+const MUTATION_ARTIFACT =
+  /SyntaxError|IndentationError|TabError|ParseError|Unexpected token|Unexpected end of input|is not defined|cannot be resolved|Cannot find name|ReferenceError|Invalid or unexpected token|missing (?:expression|statement|after)/i;
+
+function git(args, cwd) {
+  return spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
+}
+
+/**
+ * Does the check's outcome depend on the accused line?
+ *
+ * Neuter the line on a scratch `git worktree` — never the user's tree — and run
+ * the same check there. Same outcome ⇒ the check never touched that line, which
+ * is the failure mode `--control` cannot see: an always-pass oracle agrees with
+ * any prediction and passes any control.
+ *
+ * The worktree is checked out from HEAD, so it has neither untracked source, the
+ * repo's `.venv`, nor `node_modules`. That is why the baseline run in the
+ * worktree is compared against the outcome just recorded in the real tree first:
+ * if they disagree, the probe would be measuring the environment rather than the
+ * line, and it says so instead of concluding.
+ *
+ * @returns {Promise<{flipped: boolean|null, exitCode?: number, desc?: string, reason?: string}>}
+ */
+export async function probe({
+  repo,
+  source,
+  lang,
+  caseId,
+  rank,
+  file,
+  line,
+  timeout,
+  maxBytes,
+  recordedCode,
+}) {
+  const no = (reason) => ({ flipped: null, reason });
+  const top = git(["rev-parse", "--show-toplevel"], repo);
+  if (top.status !== 0)
+    return no("not a git checkout — the probe needs a commit to build a worktree from");
+  const root = top.stdout.trim();
+  const rel = relative(root, resolve(repo, file)).split(sep).join("/");
+  if (rel.startsWith(".."))
+    return no(`${file} is outside the checkout — there is no HEAD copy to neuter`);
+  if (git(["cat-file", "-e", `HEAD:${rel}`], root).status !== 0)
+    return no(`${rel} does not exist at HEAD — the probe compares HEAD with HEAD-minus-that-line`);
+  if (git(["status", "--porcelain", "--", rel], root).stdout.trim())
+    return no(
+      `${rel} has uncommitted changes — a worktree at HEAD would probe different code than the check just ran against`,
+    );
+  const fam = NEUTER_LANG[/\.([a-z0-9]+)$/i.exec(rel)?.[1] ?? ""];
+  if (!fam) return no(`no neuter strategy for ${rel}`);
+  const wt = mkdtempSync(join(tmpdir(), "dt-probe-"));
+  const add = git(["worktree", "add", "--detach", "--quiet", wt, "HEAD"], root);
+  if (add.status !== 0) {
+    rmSync(wt, { recursive: true, force: true });
+    return no(`git worktree add failed: ${(add.stderr || "").trim().slice(0, 160)}`);
+  }
+  try {
+    const made = materialize(source, { lang, repo: wt, caseId, rank });
+    const base = await run(made.command, { cwd: wt, timeout, maxBytes });
+    if (base.timedOut) return no("the probe baseline timed out (timeout); no comparable outcome");
+    if (wasNotRunnable(base) || !Number.isInteger(base.code))
+      return no("the probe baseline could not be run to completion; no comparable outcome");
+    if (MUTATION_ARTIFACT.test(`${base.stderr}\n${base.stdout}`))
+      return no("the probe baseline has a parse or undefined-name error; not comparable");
+    // The comparison that makes the rest honest, and the one the first real repo
+    // caught missing: a scratch worktree has no untracked `.venv`, no
+    // `node_modules`, no generated files. If the check does not even reproduce its
+    // recorded outcome there, the mutated run measures the environment, not the
+    // line, and the only correct answer is that nothing was learned.
+    if (
+      Number.isInteger(recordedCode) &&
+      !base.timedOut &&
+      (base.code === 0) !== (recordedCode === 0)
+    )
+      return {
+        flipped: null,
+        exitCode: base.code,
+        desc: `${rel}:${line} would be commented out on a scratch worktree`,
+        reason: `the check behaved differently in a clean worktree (exit ${base.code}) than in your tree (exit ${recordedCode}) — an untracked dependency or generated file; the probe would have measured the environment, not the line`,
+      };
+    const target = join(wt, rel);
+    const lines = readFileSync(target, "utf8").split(/\r?\n/);
+    if (line < 1 || line > lines.length) return no(`${rel} has no line ${line} at HEAD`);
+    const indent = /^[ \t]*/.exec(lines[line - 1])?.[0] ?? "";
+    lines[line - 1] = `${indent}${NEUTER[fam](lines[line - 1].trim())}`;
+    writeFileSync(target, lines.join("\n"), "utf8");
+    const mut = await run(made.command, { cwd: wt, timeout, maxBytes });
+    if (mut.timedOut) return no("the probe mutant timed out (timeout); no comparable outcome");
+    if (wasNotRunnable(mut) || !Number.isInteger(mut.code))
+      return no("the probe mutant could not be run to completion; no comparable outcome");
+    const changed = (mut.code === 0) !== (base.code === 0);
+    const out = [mut.stderr, mut.stdout].filter(Boolean).join("\n");
+    if (MUTATION_ARTIFACT.test(out))
+      return {
+        flipped: null,
+        exitCode: mut.code,
+        baseCode: base.code,
+        desc: `${rel}:${line} commented out on a scratch worktree`,
+        reason:
+          "the neuter broke the program instead of changing its behaviour (parse or undefined-name error), so this run is not comparable — the check may still depend on that line",
+      };
+    return {
+      flipped: changed,
+      exitCode: mut.code,
+      baseCode: base.code,
+      desc: `${rel}:${line} commented out on a scratch worktree`,
+      tail: out.trim().split("\n").slice(-3).join("\n"),
+    };
+  } finally {
+    git(["worktree", "remove", "--force", "--quiet", wt], root);
+    rmSync(wt, { recursive: true, force: true });
+    git(["worktree", "prune", "--quiet"], root);
+  }
 }
 
 function evidenceBlock(label, result, maxBytes) {
@@ -347,7 +552,13 @@ async function main() {
   const repo = opts.repo ?? repoRoot(opts.cwd ?? dirname(draftPath));
   let prepared;
   try {
-    prepared = materialize(check, { lang: opts.lang, repo, caseId: draft.id, rank: cand.rank });
+    prepared = materialize(check, {
+      lang: opts.lang,
+      repo,
+      caseId: draft.id,
+      rank: cand.rank,
+      dryRun: !opts.yes,
+    });
   } catch (err) {
     return refuse(err.message);
   }
@@ -357,7 +568,12 @@ async function main() {
     `[run_check] candidate ${cand.rank ?? index + 1} · predicted ${opts.predict ?? cand.predicted} · cwd ${cwd}${opts.verify ? " · VERIFY" : ""}`,
   );
   console.error(`  check:   ${prepared.command}`);
+  if (prepared.file) console.error(`  source:\n${check}`);
   if (opts.control) console.error(`  control: ${opts.control}`);
+  if (opts.probe)
+    console.error(
+      `  probe:   ${cand.location} neutered on a scratch worktree at HEAD, then this check re-run there`,
+    );
   if (!opts.yes) {
     console.error(
       "\nDRY RUN — nothing executed. This is a model-written command in your repo; read it above, then re-run with --yes.",
@@ -375,12 +591,65 @@ async function main() {
     ? await run(opts.control, { cwd, timeout: opts.timeout, maxBytes: opts.maxBytes })
     : null;
 
-  const { verdict, notes } = classify(
+  // Receipts. On --verify no fresh control is run, so the one recorded on the
+  // first run carries the claim; on a first run nothing is recorded yet. When
+  // --probe was asked for, the prediction is graded provisionally first: the
+  // receipt it is asking for is the one the probe is about to produce, and
+  // demoting before the probe would mean the probe never runs.
+  const recordedControl = !!(opts.verify && cand.control_exit_code === 0);
+  const receipts = {
+    controlPassed: controlResult ? controlResult.code === 0 : recordedControl,
+    // Provisional only: an explicitly requested probe replaces this before recording.
+    probeFlipped: opts.probe ? true : opts.verify && cand.probe_flipped === "yes" ? true : null,
+  };
+  let { verdict, notes } = classify(
     opts.predict ?? cand.predicted,
     checkResult,
     controlResult,
     opts.timeout,
+    receipts,
   );
+
+  // The probe is the second receipt, and it is only worth its cost once the
+  // prediction has held. A falsified candidate needs no discrimination: rejecting
+  // a hypothesis is the half of this that was never broken.
+  let probed = null;
+  if (opts.probe && verdict === "confirmed") {
+    const accused = accusedAt(cand.location);
+    probed = accused
+      ? await probe({
+          repo,
+          source: check,
+          lang: opts.lang,
+          caseId: draft.id,
+          rank: cand.rank,
+          ...accused,
+          recordedCode: checkResult.code,
+          timeout: opts.timeout,
+          maxBytes: opts.maxBytes,
+        })
+      : {
+          flipped: null,
+          reason: `the candidate id "${cand.location}" is not a file:line — point it at the line the check should depend on`,
+        };
+    receipts.probeFlipped = probed.flipped;
+    receipts.controlPassed = controlResult
+      ? controlResult.code === 0
+      : !!(opts.verify && cand.control_exit_code === 0);
+    const final = classify(
+      opts.predict ?? cand.predicted,
+      checkResult,
+      controlResult,
+      opts.timeout,
+      receipts,
+    );
+    // The prelim pass was graded as if a receipt were coming, so its notes are
+    // empty; the probe's own reading of the same arithmetic is what the case
+    // file has to carry — `inconclusive_vacuous` without its reason is a label
+    // and nothing else.
+    verdict = final.verdict;
+    notes = [...final.notes, ...(probed.flipped === null ? [`probe: ${probed.reason}`] : [])];
+  }
 
   if (opts.verify) {
     // Design-doc success metric #2 — "what fraction of final confirmed claims
@@ -436,6 +705,7 @@ async function main() {
     evidence: [
       evidenceBlock("check", checkResult, opts.maxBytes),
       controlResult ? evidenceBlock("control", controlResult, opts.maxBytes) : null,
+      probed?.tail ? `probe, accused line neutered: exit ${probed.exitCode}\n${probed.tail}` : null,
       ...notes,
     ]
       .filter(Boolean)
@@ -443,13 +713,23 @@ async function main() {
     ...(opts.control
       ? { control: opts.control, control_exit_code: controlResult?.code ?? null }
       : {}),
+    // Record what the probe showed, including "it could not run": a missing
+    // receipt has to be visible to write_case, not merely absent.
+    ...(opts.probe && probed
+      ? {
+          probe: `${probed.desc ?? "probe not run"}${probed.reason ? ` — ${probed.reason}` : ""}`,
+          probe_exit_code: Number.isInteger(probed.exitCode) ? probed.exitCode : null,
+          probe_flipped:
+            probed.flipped === true ? "yes" : probed.flipped === false ? "no" : "not-run",
+        }
+      : {}),
   });
 
   writeAtomic(draftPath, JSON.stringify(draft, null, 2) + "\n");
   if (prepared.file && !opts.keep) rmSync(prepared.file, { force: true });
   // "could not be evaluated" is a harness-level result, so it leaves a non-zero
   // trace: a caller that ignores stdout still cannot mistake it for a verdict.
-  if (verdict === "inconclusive") process.exitCode = 2;
+  if (verdict === "inconclusive" || verdict === "inconclusive_vacuous") process.exitCode = 2;
 
   const remaining = (draft.candidates ?? []).filter((c) => c.verdict === "pending").length;
   console.log(
@@ -462,6 +742,13 @@ async function main() {
         verdict,
         predicted: opts.predict,
         check_exit_code: checkResult.code,
+        ...(opts.probe
+          ? {
+              probe_flipped:
+                probed?.flipped === true ? "yes" : probed?.flipped === false ? "no" : "not-run",
+              probe_exit_code: Number.isInteger(probed?.exitCode) ? probed.exitCode : null,
+            }
+          : {}),
         control_exit_code: controlResult?.code ?? null,
         draft: draftPath,
         next:

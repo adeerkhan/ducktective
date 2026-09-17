@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,8 +18,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = resolve(HERE, "..");
 const INSTALL = join(SKILL_ROOT, "bin", "install.mjs");
 
-/** An empty home: target resolution must be computed, never found on this box. */
-const EMPTY_HOME = mkdtempSync(join(tmpdir(), "dt-home-"));
+/** An empty home: target resolution must be computed, never found on this box.
+ * Created by the one test that needs it, so no scratch directory outlives a run. */
+const emptyHome = () => mkdtempSync(join(tmpdir(), "dt-home-"));
 
 function install(args) {
   const run = spawnSync(process.execPath, [INSTALL, "--source", SKILL_ROOT, ...args], {
@@ -39,7 +40,7 @@ test("skillFiles ships the contract and the tools, never the test bench", () => 
   const files = skillFiles(SKILL_ROOT);
   assert.ok(files.includes("SKILL.md"));
   assert.ok(files.includes("case-file.schema.json"));
-  for (const tool of ["reproduce", "run_check", "write_case", "query_memory"]) {
+  for (const tool of ["reproduce", "run_check", "write_case", "bisect", "check"]) {
     assert.ok(files.includes(`scripts/${tool}.mjs`), `${tool} must ship`);
   }
   assert.ok(files.includes("scripts/lib/exec.mjs"), "shared internals must ship too");
@@ -63,7 +64,8 @@ test("a clean install writes every listed file and nothing else", (t) => {
   assert.equal(report.installed, true);
   assert.equal(report.files, skillFiles(SKILL_ROOT).length);
   assert.deepEqual(report.tools.sort(), [
-    "query_memory.mjs",
+    "bisect.mjs",
+    "check.mjs",
     "reproduce.mjs",
     "run_check.mjs",
     "write_case.mjs",
@@ -71,13 +73,12 @@ test("a clean install writes every listed file and nothing else", (t) => {
   for (const rel of skillFiles(SKILL_ROOT)) assert.ok(existsSync(join(to, rel)), `${rel} missing`);
 });
 
-test("--target resolves to the folders each agent actually scans", () => {
-  // Facts, not guesses: Claude Code reads ~/.claude/skills; Codex reads
-  // $HOME/.agents/skills and $CWD/.agents/skills per developers.openai.com/codex/skills
-  // — there is no ~/.codex/skills scan, so pointing the installer there would
-  // "succeed" while installing nothing. --dry-run resolves the target and writes
-  // nothing, so this never touches the real home directory.
-  const where = (target) => {
+test("--target resolves to the folder Claude Code actually scans", (t) => {
+  // Facts, not guesses: Claude Code reads ~/.claude/skills. --dry-run resolves the
+  // target and writes nothing, so this never touches the real home directory.
+  const where = emptyHome();
+  t.after(() => rmSync(where, { recursive: true, force: true }));
+  const forTarget = (target) => {
     const run = spawnSync(
       process.execPath,
       [INSTALL, "--source", SKILL_ROOT, "--target", target, "--dry-run"],
@@ -87,18 +88,25 @@ test("--target resolves to the folders each agent actually scans", () => {
         // A --target is resolved under $HOME, so an install sitting in the real
         // home directory makes this test disagree depending on the machine. Point
         // HOME at an empty folder: the target must be computed, never found.
-        env: { ...process.env, HOME: EMPTY_HOME, USERPROFILE: EMPTY_HOME },
+        env: { ...process.env, HOME: where, USERPROFILE: where },
       },
     );
     return JSON.parse(run.stdout).dest;
   };
-  assert.equal(where("claude"), join(EMPTY_HOME, ".claude", "skills", "ducktective"));
-  const codex = where("codex");
-  assert.equal(codex, join(EMPTY_HOME, ".agents", "skills", "ducktective"));
-  assert.ok(!codex.includes(".codex"), `codex must not point at ~/.codex: ${codex}`);
-  assert.equal(where("agents"), join(process.cwd(), ".agents", "skills", "ducktective"));
+  assert.equal(forTarget("claude"), join(where, ".claude", "skills", "ducktective"));
+  // The retired targets stay refused: accepting a name would promise an install
+  // for an agent whose scan path nobody has verified.
+  for (const gone of ["codex", "agents"])
+    assert.equal(
+      spawnSync(process.execPath, [INSTALL, "--target", gone, "--dry-run"], {
+        encoding: "utf8",
+        windowsHide: true,
+      }).status,
+      2,
+      `--target ${gone} is retired and must be refused, not guessed`,
+    );
   assert.ok(
-    !where("claude").startsWith(process.cwd()),
+    !forTarget("claude").startsWith(process.cwd()),
     "a user target must not resolve inside the checkout",
   );
 });
@@ -122,12 +130,12 @@ test("run from a clone, it installs itself with no --source and no network", (t)
 test("an installed skill runs its own tools from its own directory", (t) => {
   const to = dest(t);
   install(["--dest", to]);
-  const run = spawnSync(process.execPath, [join(to, "scripts", "query_memory.mjs"), "--help"], {
+  const run = spawnSync(process.execPath, [join(to, "scripts", "reproduce.mjs"), "--help"], {
     encoding: "utf8",
     windowsHide: true,
   });
   assert.equal(run.status, 0);
-  assert.match(run.stdout, /usage: query_memory\.mjs/);
+  assert.match(run.stdout, /usage: reproduce\.mjs/);
 });
 
 test("re-running is a no-op, not a rewrite", (t) => {
@@ -173,3 +181,27 @@ test("--dry-run plans without writing, and a bad --target is refused", (t) => {
 });
 
 const errOf = (out) => (out ? "" : " (empty stdout)");
+
+test("a tool retired upstream is reported, and only removed when told to", (t) => {
+  // The installer adds and updates; without this it never subtracts, so
+  // `query_memory.mjs` sat in an installed skill after the repo deleted it and a
+  // host agent would still have found a script the docs stopped describing.
+  const to = dest(t);
+  install(["--dest", to]);
+  const ghost = join(to, "scripts", "query_memory.mjs");
+  mkdirSync(dirname(ghost), { recursive: true });
+  writeFileSync(ghost, "// retired upstream", "utf8");
+
+  const seen = install(["--dest", to, "--dry-run"]);
+  assert.deepEqual(JSON.parse(seen.out).stale, ["scripts/query_memory.mjs"]);
+  assert.ok(existsSync(ghost), "a dry run must not delete anything");
+
+  const plain = install(["--dest", to]);
+  assert.deepEqual(JSON.parse(plain.out).stale, ["scripts/query_memory.mjs"]);
+  assert.deepEqual(JSON.parse(plain.out).stale_removed, []);
+  assert.ok(existsSync(ghost), "an unasked-for delete is a clobber by another name");
+
+  const forced = install(["--dest", to, "--force"]);
+  assert.deepEqual(JSON.parse(forced.out).stale_removed, ["scripts/query_memory.mjs"]);
+  assert.ok(!existsSync(ghost), "--force means prune what the source no longer ships");
+});

@@ -38,6 +38,8 @@ function confirmed(overrides = {}) {
         check: 'python -c "assert total([1,2,3,4]) == 10"',
         predicted: "fail",
         check_exit_code: 1,
+        control: 'python -c "import app"',
+        control_exit_code: 0,
         verdict: "confirmed",
         evidence: "AssertionError: 6 != 10",
       },
@@ -101,6 +103,67 @@ test("re-writing the same id updates the store instead of duplicating it", () =>
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
+});
+
+test("a confirmed verdict owes a discrimination receipt, not just agreement", () => {
+  // predicted + exit code prove the check AGREED; control_exit_code === 0 proves
+  // it is not always-fail; probe_flipped === "yes" proves the outcome depends on
+  // the accused line. A `confirmed` with none of the last two is the confident
+  // wrong answer this skill exists to catch, in its own oracle.
+  const bare = confirmed();
+  delete bare.candidates[0].control;
+  delete bare.candidates[0].control_exit_code;
+  assert.match(problems(bare).join("\n"), /no discrimination receipt/);
+
+  const probed = confirmed({
+    candidates: [
+      {
+        ...confirmed().candidates[0],
+        control: undefined,
+        control_exit_code: undefined,
+        probe: "py neuter inserted before app.py:6",
+        probe_exit_code: 1,
+        probe_flipped: "yes",
+      },
+    ],
+  });
+  assert.deepEqual(problems(probed), [], "a flipped probe is a receipt on its own");
+
+  const vacuous = confirmed({
+    candidates: [{ ...confirmed().candidates[0], verdict: "inconclusive_vacuous" }],
+  });
+  assert.match(problems(vacuous).join("\n"), /inconclusive_vacuous" requires probe_flipped "no"/);
+});
+
+for (const predicted of ["pass", "fail"]) {
+  test(`a held ${predicted} prediction with a non-flip is storable only as inconclusive_vacuous`, () => {
+    const c = confirmed({
+      status: "unverified",
+      confirmed_cause: null,
+      confidence: "low",
+      leading_hypothesis: "not yet isolated",
+    });
+    Object.assign(c.candidates[0], {
+      predicted,
+      check_exit_code: predicted === "pass" ? 0 : 1,
+      verdict: "inconclusive_vacuous",
+      probe_flipped: "no",
+    });
+    assert.deepEqual(problems(c), []);
+    c.candidates[0].check_exit_code = predicted === "pass" ? 1 : 0;
+    assert.match(problems(c).join("\n"), /contradicts its own check/);
+    c.candidates[0].check_exit_code = predicted === "pass" ? 0 : 1;
+    c.candidates[0].verdict = "confirmed";
+    assert.match(problems(c).join("\n"), /probe_flipped.*no|non-flip/);
+  });
+}
+
+test("a pass prediction needs a flipped probe even with a passed control", () => {
+  const c = confirmed();
+  Object.assign(c.candidates[0], { predicted: "pass", check_exit_code: 0 });
+  assert.match(problems(c).join("\n"), /pass.*flipped probe/);
+  c.candidates[0].probe_flipped = "yes";
+  assert.deepEqual(problems(c), []);
 });
 
 test("speculation is refused: a verdict with no evidence cannot be recorded", () => {

@@ -114,7 +114,7 @@ export function policyViolations(c) {
     if (cand.verdict !== "pending" && !text(cand.hypothesis)) {
       bad.push(`candidate "${cand.location}": verdict "${cand.verdict}" with no hypothesis stated`);
     }
-    if (cand.verdict === "confirmed" || cand.verdict === "falsified") {
+    if (["confirmed", "falsified", "inconclusive_vacuous"].includes(cand.verdict)) {
       if (!text(cand.check))
         bad.push(`candidate "${cand.location}": verdict "${cand.verdict}" with no check to run`);
       if (!text(cand.evidence))
@@ -136,7 +136,7 @@ export function policyViolations(c) {
         const passed = cand.check_exit_code === 0;
         const held = cand.predicted === "pass" ? passed : !passed;
         const wanted = held ? "confirmed" : "falsified";
-        if (cand.verdict !== wanted) {
+        if (cand.verdict === "inconclusive_vacuous" ? !held : cand.verdict !== wanted) {
           bad.push(
             `candidate "${cand.location}": verdict "${cand.verdict}" contradicts its own check (predicted ${cand.predicted}, exit ${cand.check_exit_code} ⇒ ${wanted})`,
           );
@@ -158,6 +158,41 @@ export function policyViolations(c) {
       ) {
         bad.push(
           `candidate "${cand.location}": the control command also failed (exit ${cand.control_exit_code}) — bad oracle, it distinguishes nothing (rule 5)`,
+        );
+      }
+      // A prediction that matches and a control that passes both prove only that
+      // the check AGREES. Nothing in that pair requires the check's outcome to
+      // depend on the line being accused — an always-pass check plus `--predict
+      // pass` was storable as `confirmed` with full provenance. A confirmed
+      // verdict now owes a discrimination receipt: a passed control (not
+      // always-fail) or a probe that flipped (not always-pass).
+      if (
+        cand.verdict === "confirmed" &&
+        cand.control_exit_code !== 0 &&
+        cand.probe_flipped !== "yes"
+      ) {
+        bad.push(
+          `candidate "${cand.location}": "confirmed" with no discrimination receipt — run it with --control or --probe; a check that never touches the accused line agrees with any prediction (rule 5)`,
+        );
+      }
+      if (cand.verdict === "confirmed" && cand.probe_flipped === "no") {
+        bad.push(
+          `candidate "${cand.location}": "confirmed" contradicts the non-flip (probe_flipped "no") — no sensitivity detected under this mutation`,
+        );
+      }
+      if (
+        cand.verdict === "confirmed" &&
+        cand.predicted === "pass" &&
+        cand.probe_flipped !== "yes"
+      ) {
+        bad.push(
+          `candidate "${cand.location}": a pass prediction requires a flipped probe; a passed control alone cannot rule out an always-pass check`,
+        );
+      }
+      // `inconclusive_vacuous` is the probe's finding, not a word for a weak check.
+      if (cand.verdict === "inconclusive_vacuous" && cand.probe_flipped !== "no") {
+        bad.push(
+          `candidate "${cand.location}": "inconclusive_vacuous" requires probe_flipped "no" — say what the probe showed, or use "inconclusive"`,
         );
       }
     }
@@ -249,6 +284,13 @@ export function renderMarkdown(c) {
       `*Hypothesis:* ${cand.hypothesis || "not stated"}`,
     ];
     if (cand.check) block.push("", "```", cand.check, "```");
+    if (cand.probe || cand.probe_flipped)
+      block.push(
+        "",
+        `*Probe:* ${cand.probe ?? "not run"} → \`probe_flipped: ${cand.probe_flipped ?? "not-run"}\`${
+          Number.isInteger(cand.probe_exit_code) ? `, check exit ${cand.probe_exit_code}` : ""
+        }`,
+      );
     if (cand.evidence) block.push("", "*Evidence:*", "", "```", clip(cand.evidence, 900), "```");
     lines.push(...block, "");
   }

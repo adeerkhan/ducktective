@@ -10,13 +10,23 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SKILL = join(ROOT, "skills", "ducktective", "SKILL.md");
+
+// Match a filename token, not the suffix of run_check.mjs.
+function mentionsTool(text, tool) {
+  return (text.match(/[A-Za-z0-9_.-]+\.mjs/g) ?? []).includes(tool);
+}
+
+test("tool mentions require an exact filename", () => {
+  assert.equal(mentionsTool("`run_check.mjs`", "check.mjs"), false);
+  assert.equal(mentionsTool("`scripts/check.mjs`", "check.mjs"), true);
+});
 
 /** Every committed file named SKILL.md, anywhere below `dir`. */
 function skillFiles(dir) {
@@ -45,16 +55,21 @@ test("SKILL.md is a valid Agent Skill frontmatter for `ducktective`", () => {
   assert.match(frontmatter, /^description: \S/m);
 });
 
-test("the site imports SKILL.md instead of embedding a copy", () => {
-  const page = readFileSync(join(ROOT, "site", "src", "routes", "skill.tsx"), "utf8");
-  assert.match(page, /skills\/ducktective\/SKILL\.md\?raw/);
-  assert.ok(!statSync(join(ROOT, "site", "src", "lib", "skill-doc.ts"), { throwIfNoEntry: false }));
-});
+// The site used to render SKILL.md through `?raw`, and this test watched for a
+// second copy. The site is gone; the single-source check above is the part still
+// worth a guard, and `?raw` would now be a reference to a build that does not exist.
 
 /**
  * The reference doc is what future work is based on, so it is checked like code:
  * a tool or a route missing from it is a silent lie by omission, which is the
  * only way documents rot in practice.
+ */
+/**
+ * The reference doc is what future work is based on, so it is checked like code:
+ * a tool missing from it is a silent lie by omission, which is the only way
+ * documents rot in practice. The site's routes were listed here too, until the site
+ * was deleted; the loop stayed useful for the one thing it can actually see — the
+ * scripts the installer ships.
  */
 test("docs/architecture.md stays a true reference", () => {
   // A file on disk is not a file in the repo. This test reads the reference, so a
@@ -76,17 +91,12 @@ test("docs/architecture.md stays a true reference", () => {
   for (const entry of readdirSync(scriptsDir, { withFileTypes: true })) {
     if (entry.isFile() && entry.name.endsWith(".mjs")) {
       assert.ok(
-        doc.includes(entry.name),
+        mentionsTool(doc, entry.name),
         `architecture.md never mentions shipped tool ${entry.name}`,
       );
     }
   }
   assert.ok(doc.includes("install.mjs"), "architecture.md omits the installer");
-  for (const route of readdirSync(join(ROOT, "site", "src", "routes"))) {
-    const name = route.replace(/^__/, "").replace(/\.tsx$/, "");
-    if (name === "root") continue;
-    assert.ok(doc.includes(name), `architecture.md omits site route /${name}`);
-  }
   // Derived, like the tool and route lists above: the guard that names a data file
   // by hand goes stale the day it is renamed, which is the failure it exists to catch.
   const ledger = readdirSync(join(ROOT, "evals")).find((f) => /^RUNLOG\./.test(f));
@@ -105,7 +115,7 @@ test("every tool the skill ships is documented in SKILL.md", () => {
   assert.ok(tools.length > 0, "expected at least one tool script");
   for (const tool of tools) {
     assert.ok(
-      skill.includes(tool),
+      mentionsTool(skill, tool),
       `SKILL.md never mentions ${tool} — an undocumented tool is a tool nobody runs`,
     );
   }

@@ -48,7 +48,9 @@
           "why": { "type": "string" },
           "hypothesis": { "type": "string" },
           "check": { "type": "string" },
-          "verdict": { "enum": ["pending", "falsified", "confirmed", "inconclusive"] },
+          "verdict": {
+            "enum": ["pending", "falsified", "confirmed", "inconclusive", "inconclusive_vacuous"]
+          },
           "evidence": { "type": "string" },
           "predicted": {
             "description": "What the check must do if the hypothesis is TRUE. The oracle direction: the check should FAIL (crash, assert wrong) or PASS (behave correctly). run_check.mjs records this so the verdict is arithmetic, not prose.",
@@ -62,6 +64,17 @@
             "description": "Known-good command that must pass for the check to be a valid oracle (SKILL.md rule 5)."
           },
           "control_exit_code": { "type": ["number", "null"] },
+          "probe": {
+            "description": "How the accused location was neutered on a scratch worktree (`raise`/`throw` injected before the line), or null if never probed. The prediction and the control together only prove the check AGREES with the claim; a check that passes for reasons unrelated to the accused line survives both, so this is what makes `confirmed` mean something."
+          },
+          "probe_exit_code": {
+            "description": "Exit code of the check with the accused location neutered. null = the probe could not be run.",
+            "type": ["number", "null"]
+          },
+          "probe_flipped": {
+            "description": "yes = the check's outcome changed when the accused line was neutered, so the check depends on it. no = it did not change, so the check proved nothing about that line (verdict: inconclusive_vacuous). not-run = never probed.",
+            "enum": ["yes", "no", "not-run"]
+          },
           "verified_exit_code": {
             "description": "Exit code of the re-executed check (run_check --verify).",
             "type": ["number", "null"]

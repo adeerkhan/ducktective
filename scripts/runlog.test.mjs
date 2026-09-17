@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,7 +117,7 @@ test("first-candidate and verify survival come from the verdicts", (t) => {
   assert.match(rep.stdout, /M3\. claim survived --verify\s+0%\s+\[0\/1\]/);
 });
 
-test("design §9 counts first OR second, so the report prints both shares", (t) => {
+test("the continue-branch threshold is first OR second, so the report prints both shares", (t) => {
   const { dir, log } = sandbox(t);
   const second = {
     rank: 2,
@@ -146,10 +146,6 @@ test("a flag with an unrecognised value is refused and records nothing", (t) => 
   const { dir, log } = sandbox(t);
   for (const [flag, bad] of [
     ["--changed-decision", "maybe"],
-    ["--opened", "sometimes"],
-    ["--memory-changed", "perhaps"],
-    ["--duck-claim", "maybe"],
-    ["--plain-claim", "sometimes"],
     ["--provenance", "real-ish"],
   ]) {
     const r = rec(dir, log, `x${flag}.json`, draft("DT-260101-eeee05", "does_not_reproduce"), [
@@ -163,93 +159,6 @@ test("a flag with an unrecognised value is refused and records nothing", (t) => 
     assert.ok(!exists(log), "a refused record must not append a row");
   }
 });
-
-test("a refused claim counts as a win, and an unrun baseline as no data", (t) => {
-  const { dir, log } = sandbox(t);
-  const conf = [
-    {
-      rank: 1,
-      location: "app.py:7 total()",
-      hypothesis: "h",
-      check: "c",
-      verdict: "confirmed",
-      evidence: "e",
-      predicted: "fail",
-      check_exit_code: 1,
-    },
-  ];
-  // Ducktective named the cause and was right; the bare agent named one and was wrong.
-  rec(dir, log, "a.json", draft("DT-260101-gg0707", "reproduced", conf), [
-    "--duck-claim",
-    "yes",
-    "--plain-claim",
-    "no",
-  ]);
-  // Ducktective abstained, and there was never a bare run to compare against.
-  rec(dir, log, "b.json", draft("DT-260101-hh0808", "does_not_reproduce"), [
-    "--duck-claim",
-    "none",
-    "--plain-claim",
-    "not-run",
-  ]);
-  // Nobody judged anything.
-  rec(dir, log, "c.json", draft("DT-260101-ii0909", "reproduced", conf));
-  assert.deepEqual(
-    rowsOf(log).map((r) => [r.duck_claim_right, r.plain_claim_right]),
-    [
-      ["yes", "no"],
-      ["none", "not-run"],
-      ["", ""],
-    ],
-  );
-  const rep = run(["--log", log, "--report"]);
-  // M8's denominator is 2: `none` is a run that made no confident claim, which is the
-  // behaviour the skill exists to produce, so it is neither a wrong answer nor absent.
-  assert.match(rep.stdout, /M8\. confident-wrong root cause: Ducktective\s+0%\s+\[0\/2\]/);
-  // M9's is 1, because `not-run` and blank are not evidence about the bare agent; and
-  // only one bug has both sides judged, which is what `paired` exists to say.
-  assert.match(
-    rep.stdout,
-    /M9\. confident-wrong root cause: bare "fix this"\s+100%\s+\[1\/1\]\s+paired: 1/,
-  );
-});
-
-test("host-reported numbers must be numbers, not strings in disguise", (t) => {
-  const { dir, log } = sandbox(t);
-  assert.equal(
-    rec(dir, log, "w.json", draft("DT-260101-ffff06", "does_not_reproduce"), ["--wall-clock", "9m"])
-      .status,
-    2,
-    "CSV-era behaviour stored '9m' and silently dropped it from the mean",
-  );
-  const ok = rec(dir, log, "w2.json", draft("DT-260101-ffff07", "does_not_reproduce"), [
-    "--wall-clock",
-    "9.5",
-    "--tokens-plain",
-    "4200",
-    "--tokens-duck",
-    "1500",
-    "--changed-decision",
-    "yes",
-    "--opened",
-    "yes",
-    "--memory-changed",
-    "n/a",
-  ]);
-  assert.equal(ok.status, 0, ok.stderr);
-  const row = rowsOf(log).at(-1);
-  assert.equal(typeof row.wall_clock_min, "number");
-  assert.equal(row.tokens_plain, 4200);
-  assert.equal(row.decision_changed, "yes");
-  assert.equal(row.memory_changed_search, "n/a", "n/a is a real answer, distinct from blank");
-  const rep = run(["--log", log, "--report"]);
-  assert.match(rep.stdout, /M4\. case file CHANGED a decision\s+100%\s+\[1\/1\]/);
-  assert.match(rep.stdout, /M4n\. case file merely opened \(attention\)\s+100%\s+\[1\/1\]/);
-  assert.match(rep.stdout, /M7\. wall-clock per investigation\s+9\.5 min mean/);
-  assert.match(rep.stdout, /M6\. tokens: bare "fix this" vs Ducktective\s+2\.80×/);
-});
-
-// --- provenance and integrity -----------------------------------------------
 
 test("constructed fixtures never share a denominator with real rows", (t) => {
   const { dir, log } = sandbox(t);
@@ -296,58 +205,16 @@ test("the real pilot ledger parses and reports, and every unmeasured metric says
   const rep = run(["--report"]);
   assert.equal(rep.status, 0, rep.stderr);
   const lines = rep.stdout.split("\n").filter((l) => /^\s+M\d+n?\./.test(l));
-  // One block per group; the pilot ledger is all-real, so a second block would
-  // repeat the same seven numbers and read as twice the evidence.
-  assert.ok(lines.length >= 7, `expected the seven metrics, got ${lines.length}`);
+  // One block per group; the ledger is all-real, so a second block would repeat the
+  // same numbers and read as twice the evidence. Four metrics now, because every
+  // other one was a human transcribing their own run (M5–M9, deleted).
+  assert.equal(lines.length, 4, `expected M1\u2013M4, got ${lines.join(" | ")}`);
   assert.ok(!/real rows only/.test(rep.stdout), "no second block when every row is already real");
   assert.ok(
     !/NaN|undefined|\[object/.test(rep.stdout),
     "a formatted number must never leak a bad value",
   );
 });
-
-test("an M5 answer that names its blind run is tellable from one that doesn't", (t) => {
-  const { dir, log } = sandbox(t);
-  const conf = [
-    {
-      rank: 1,
-      location: "app.py:7 total()",
-      hypothesis: "h",
-      check: "c",
-      verdict: "confirmed",
-      evidence: "e",
-      predicted: "fail",
-      check_exit_code: 1,
-    },
-  ];
-  rec(dir, log, "paired.json", draft("DT-260101-jj1010", "reproduced", conf), [
-    "--memory-changed",
-    "yes",
-    "--pair-case",
-    "DT-260101-blind",
-  ]);
-  rec(dir, log, "solo.json", draft("DT-260101-kk1111", "reproduced", conf), [
-    "--memory-changed",
-    "no",
-  ]);
-  const rows = rowsOf(log);
-  assert.equal(rows[0].pair_case_id, "DT-260101-blind", "the blind run stays citable");
-  assert.equal(rows[1].pair_case_id, "", 'no pair is blank, never the string "none"');
-  const rep = run(["--log", log, "--report"]);
-  // M5's percentage is identical either way; M5p exists so a reader can see how much of
-  // it is audited and how much is a lone claim about a comparison nobody recorded.
-  assert.match(rep.stdout, /M5\. memory changed what was tried\s+50%\s+\[1\/2\]/);
-  assert.match(rep.stdout, /M5p\..*naming their blind run\s+1\/2 answered/);
-});
-
-const exists = (p) => {
-  try {
-    readFileSync(p);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 test("re-logging a case refreshes its row, it does not count the bug twice", (t) => {
   // The ledger is one line per case id for the same reason the store is: the
@@ -362,8 +229,73 @@ test("re-logging a case refreshes its row, it does not count the bug twice", (t)
     ...first,
     candidates: [{ ...first.candidates[0], verified_verdict: "confirmed" }],
   });
+  assert.equal(JSON.parse(again.stdout).recorded, "DT-260101-ff00ff");
   const rows = rowsOf(log);
   assert.equal(rows.length, 1, "one case id, one row");
   assert.equal(rows[0].survived_verify, "yes", "the re-log carries the new fact");
   assert.equal(rows[0].provenance, "real", "and the answers typed for it");
+});
+
+const exists = (p) => {
+  try {
+    readFileSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test("the retired columns are refused, and say what replaced them", (t) => {
+  // A flag that silently does nothing is worse than one that errors: the row would
+  // look recorded while the answer evaporated. So the hand-transcribed columns
+  // refuse, and point at the mechanical benchmark instead of the old prose metric.
+  const { dir, log } = sandbox(t);
+  // The flags are validated before the case file is even opened, so a refusal
+  // cannot leave a half-written row behind.
+  for (const flag of [
+    "--opened",
+    "--memory-changed",
+    "--pair-case",
+    "--tokens-plain",
+    "--tokens-duck",
+    "--wall-clock",
+    "--duck-claim",
+    "--plain-claim",
+  ]) {
+    const r = rec(dir, log, "r.json", draft("DT-260101-eeee09", "reproduced"), [flag, "yes"]);
+    assert.equal(r.status, 2, `${flag} must be refused`);
+    assert.match(r.stderr, /retired with the hand-transcribed columns/);
+  }
+  assert.ok(!exists(log), "a refused record must not append a row");
+});
+
+test("a legacy row's retired keys survive a re-record and stay out of the report", (t) => {
+  // History is not rewritten to fit a smaller schema: RUNLOG.jsonl keeps whatever
+  // the old columns recorded, read() maps absent fields to empty, and the report
+  // no longer computes anything from them.
+  const { dir, log } = sandbox(t);
+  const c = draft("DT-260101-eeee10", "reproduced", [
+    { rank: 1, verdict: "confirmed", location: "app.py:1 f()" },
+  ]);
+  rec(dir, log, "legacy.json", c, ["--changed-decision", "yes"]);
+  const rows = rowsOf(log);
+  appendFileSync(
+    log,
+    JSON.stringify({ ...rows[0], tokens_duck: 1500, human_opened: "yes" }) +
+      String.fromCharCode(10),
+    "utf8",
+  );
+  const rep = run(["--log", log, "--report"]);
+  assert.equal(rep.status, 0, rep.stderr);
+  assert.ok(!/tokens|human_opened|M5|M6|M7|M8|M9/.test(rep.stdout), rep.stdout);
+  assert.equal(
+    rec(dir, log, "again.json", {
+      ...c,
+      candidates: [{ ...c.candidates[0], verified_verdict: "confirmed" }],
+    }).status,
+    0,
+  );
+  const kept = rowsOf(log).filter((r) => r.case_id === "DT-260101-eeee10");
+  assert.equal(kept.length, 1, "one row per case id, retired keys or not");
+  assert.equal(kept[0].survived_verify, "yes");
 });
