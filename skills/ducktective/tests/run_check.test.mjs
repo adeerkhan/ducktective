@@ -941,6 +941,104 @@ for (const line of [1, 2]) {
   });
 }
 
+test("--probe: py sole body line falls through to neutralize and flips", (t) => {
+  // The C7 blocker: deleting the only body line of an indented Python block
+  // yields IndentationError — an artifact, not a comparable run. The neutralize
+  // strategy (same-indentation `pass`) keeps the program running, so a check
+  // that depends on that line flips instead of reporting not-run.
+  const pyRepo = mkdtempSync(join(tmpdir(), "dt-probe-py-"));
+  const git = (...a) => spawnSync("git", a, { cwd: pyRepo, encoding: "utf8", windowsHide: true });
+  mkdirSync(join(pyRepo, "src"), { recursive: true });
+  writeFileSync(join(pyRepo, "src/calc.py"), "def total(rows):\n    return sum(rows)\n", "utf8");
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "tests@example.invalid");
+  git("config", "user.name", "tests");
+  git("config", "core.autocrlf", "false");
+  git("add", "-A");
+  git("commit", "-q", "-m", "seed");
+  const file = join(pyRepo, "draft.json");
+  const draft = DRAFT();
+  draft.candidates = [
+    {
+      ...draft.candidates[0],
+      location: "src/calc.py:2 total()",
+      check:
+        "python -c \"import sys; sys.path.insert(0, 'src'); from calc import total; sys.exit(0 if total([1,2,3]) == 6 else 1)\"",
+      evidence: "x",
+    },
+  ];
+  writeFileSync(file, JSON.stringify(draft, null, 2), "utf8");
+  t.after(() => {
+    rmSync(pyRepo, { recursive: true, force: true });
+  });
+  const { code, out, stderr } = probeRun(
+    { repo: pyRepo, file, read: () => JSON.parse(readFileSync(file, "utf8")) },
+    "pass",
+  );
+  assert.equal(code, 0, stderr);
+  assert.equal(
+    out.verdict,
+    "confirmed",
+    "the line is the only body line; neutralizing it must flip",
+  );
+  assert.equal(out.probe_flipped, "yes");
+  assert.match(
+    String(readFileSync(file, "utf8")),
+    /neutralize/,
+    "the strategy that flipped is recorded",
+  );
+  assert.equal(
+    readFileSync(join(pyRepo, "src", "calc.py"), "utf8"),
+    "def total(rows):\n    return sum(rows)\n",
+    "the user's file must come back byte-identical",
+  );
+});
+
+test("--probe: all strategies unusable reports not-run, never vacuous", (t) => {
+  // Python, multi-line function, accused line = the `def` itself: delete
+  // orphans the indented body (IndentationError), neutralize turns the def
+  // into `pass` while the body below stays indented (also IndentationError).
+  // No comparable mutant exists — "could not test" must stay distinct from
+  // "ran and did not care" (vacuous).
+  const pyRepo = mkdtempSync(join(tmpdir(), "dt-probe-py2-"));
+  const git = (...a) => spawnSync("git", a, { cwd: pyRepo, encoding: "utf8", windowsHide: true });
+  mkdirSync(join(pyRepo, "src"), { recursive: true });
+  writeFileSync(
+    join(pyRepo, "src/calc.py"),
+    "def total(rows):\n    s = 0\n    for r in rows:\n        s += r\n    return s\n",
+    "utf8",
+  );
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "tests@example.invalid");
+  git("config", "user.name", "tests");
+  git("config", "core.autocrlf", "false");
+  git("add", "-A");
+  git("commit", "-q", "-m", "seed");
+  const file = join(pyRepo, "draft.json");
+  const draft = DRAFT();
+  draft.candidates = [
+    {
+      ...draft.candidates[0],
+      location: "src/calc.py:1 total()",
+      check:
+        "python -c \"import sys; sys.path.insert(0, 'src'); from calc import total; sys.exit(0 if total([1,2,3]) == 6 else 1)\"",
+      evidence: "x",
+    },
+  ];
+  writeFileSync(file, JSON.stringify(draft, null, 2), "utf8");
+  t.after(() => {
+    rmSync(pyRepo, { recursive: true, force: true });
+  });
+  const { code, out, stderr } = probeRun(
+    { repo: pyRepo, file, read: () => JSON.parse(readFileSync(file, "utf8")) },
+    "pass",
+  );
+  assert.equal(code, 2, stderr);
+  assert.equal(out.verdict, "inconclusive", "no usable mutant is inconclusive, not vacuous");
+  assert.equal(JSON.parse(readFileSync(file, "utf8")).candidates[0].probe_flipped, "not-run");
+  assert.match(String(readFileSync(file, "utf8")), /no usable mutant/);
+});
+
 for (const phase of ["baseline", "mutant"]) {
   for (const failure of ["timeout", "unrunnable"]) {
     test(`probe rejects ${phase} ${failure} rather than reporting sensitivity`, async (t) => {

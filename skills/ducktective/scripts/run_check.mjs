@@ -32,7 +32,7 @@
  */
 import { numFlag } from "./lib/args.mjs";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -338,21 +338,30 @@ export function accusedAt(location) {
 }
 
 /**
- * The neuter: comment the accused line out, keep the program running.
+ * The neuter: neutralize the accused line, keep the program running.
  *
  * Aborting *before* the line (injecting a raise/throw) is the obvious strategy and
  * the wrong one: a check that already fails keeps failing when the code above it
  * dies, so an exit-code comparison reports "no change" about a line that mattered
- * enormously. Deleting the line keeps the process alive, so the only way the
+ * enormously. Neutralizing keeps the process alive, so the only way the
  * outcome survives is that the line genuinely did not matter.
  *
- * ponytail: one strategy — line deletion. Construct-aware neighbours (sentinel
- * return, inverted condition, perturbed constant) are the upgrade once a corpus
- * shows deletion missing causes it cannot see.
+ * Two strategies, tried in order on the ORIGINAL line text; the first flip wins.
+ * Delete is the sharpest: it removes exactly the accused computation. But on an
+ * indented sole body line (Python's `def f():\n    return x`) deletion breaks
+ * the block parse — IndentationError — which is an artifact, not evidence.
+ * Neutralize substitutes a syntactically silent stand-in at the same
+ * indentation (`pass` for Python, `;` for JS) and rescues exactly those cases.
  */
 const NEUTER = {
-  py: (text) => `# dt-probe ${text}`,
-  js: (text) => `// dt-probe ${text}`,
+  py: [
+    ["delete", (text) => `# dt-probe ${text}`],
+    ["neutralize", (_text, indent) => `${indent}pass  # dt-probe`],
+  ],
+  js: [
+    ["delete", (text) => `// dt-probe ${text}`],
+    ["neutralize", (_text, indent) => `${indent};  // dt-probe`],
+  ],
 };
 const NEUTER_LANG = {
   py: "py",
@@ -427,6 +436,32 @@ export async function probe({
   }
   try {
     const made = materialize(source, { lang, repo: wt, caseId, rank });
+    // Python caches compiled bytecode in __pycache__, validated by (mtime, size).
+    // A mutant whose replacement line has the same byte length as the original —
+    // `pass  # dt-probe` is exactly as long as `def total(rows):` — written in
+    // the same mtime second imports the STALE baseline bytecode and reports the
+    // baseline's outcome, faking either a flip or a no-change. The worktree is
+    // disposable; the cache goes with it.
+    const wipeCaches = () => {
+      const stack = [wt];
+      while (stack.length) {
+        const dir = stack.pop();
+        let entries;
+        try {
+          entries = readdirSync(dir, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const e of entries) {
+          const p = join(dir, e.name);
+          if (e.isDirectory()) {
+            if (e.name === "__pycache__") rmSync(p, { recursive: true, force: true });
+            else if (!p.startsWith(join(wt, ".git"))) stack.push(p);
+          }
+        }
+      }
+    };
+    wipeCaches();
     const base = await run(made.command, { cwd: wt, timeout, maxBytes });
     if (base.timedOut) return no("the probe baseline timed out (timeout); no comparable outcome");
     if (wasNotRunnable(base) || !Number.isInteger(base.code))
@@ -453,29 +488,57 @@ export async function probe({
     const lines = readFileSync(target, "utf8").split(/\r?\n/);
     if (line < 1 || line > lines.length) return no(`${rel} has no line ${line} at HEAD`);
     const indent = /^[ \t]*/.exec(lines[line - 1])?.[0] ?? "";
-    lines[line - 1] = `${indent}${NEUTER[fam](lines[line - 1].trim())}`;
-    writeFileSync(target, lines.join("\n"), "utf8");
-    const mut = await run(made.command, { cwd: wt, timeout, maxBytes });
-    if (mut.timedOut) return no("the probe mutant timed out (timeout); no comparable outcome");
-    if (wasNotRunnable(mut) || !Number.isInteger(mut.code))
-      return no("the probe mutant could not be run to completion; no comparable outcome");
-    const changed = (mut.code === 0) !== (base.code === 0);
-    const out = [mut.stderr, mut.stdout].filter(Boolean).join("\n");
-    if (MUTATION_ARTIFACT.test(out))
+    const original = lines[line - 1].trim();
+    // Each strategy mutates the pristine line; the first comparable, flipping
+    // mutant wins. An artifact mutant is skipped, never scored (it is not
+    // evidence the line is irrelevant). If every strategy produced only
+    // artifacts, the honest answer stays not-run.
+    const attempts = [];
+    for (const [sname, mutate] of NEUTER[fam]) {
+      const mutated = [...lines];
+      mutated[line - 1] = `${indent}${mutate(original, indent)}`;
+      writeFileSync(target, mutated.join("\n"), "utf8");
+      wipeCaches();
+      const mut = await run(made.command, { cwd: wt, timeout, maxBytes });
+      const out = [mut.stderr, mut.stdout].filter(Boolean).join("\n");
+      if (mut.timedOut)
+        return no(`the probe mutant timed out (timeout) under ${sname}; no comparable outcome`);
+      if (wasNotRunnable(mut) || !Number.isInteger(mut.code))
+        return no(
+          `the probe mutant could not be run to completion under ${sname}; no comparable outcome`,
+        );
+      if (MUTATION_ARTIFACT.test(out)) {
+        attempts.push(`${sname}: artifact (not comparable)`);
+        continue; // this mutant never produced a comparable run — try the next
+      }
+      const changed = (mut.code === 0) !== (base.code === 0);
+      attempts.push(`${sname}: ${changed ? "flipped" : "no change"}`);
+      if (changed)
+        return {
+          flipped: true,
+          strategy: sname,
+          exitCode: mut.code,
+          baseCode: base.code,
+          desc: `${rel}:${line} ${sname === "delete" ? "commented out" : "neutralized"} on a scratch worktree`,
+          tail: out.trim().split("\n").slice(-3).join("\n"),
+          attempts,
+        };
       return {
-        flipped: null,
+        flipped: false,
         exitCode: mut.code,
         baseCode: base.code,
-        desc: `${rel}:${line} commented out on a scratch worktree`,
-        reason:
-          "the neuter broke the program instead of changing its behaviour (parse or undefined-name error), so this run is not comparable — the check may still depend on that line",
+        desc: `${rel}:${line} ${sname === "delete" ? "commented out" : "neutralized"} on a scratch worktree`,
+        tail: out.trim().split("\n").slice(-3).join("\n"),
+        attempts,
       };
+    }
     return {
-      flipped: changed,
-      exitCode: mut.code,
+      flipped: null,
+      exitCode: undefined,
       baseCode: base.code,
-      desc: `${rel}:${line} commented out on a scratch worktree`,
-      tail: out.trim().split("\n").slice(-3).join("\n"),
+      desc: `${rel}:${line} could not be neutered into a comparable run`,
+      reason: `no usable mutant from any strategy (${attempts.join("; ")}) — the check may still depend on that line`,
+      attempts,
     };
   } finally {
     git(["worktree", "remove", "--force", "--quiet", wt], root);
