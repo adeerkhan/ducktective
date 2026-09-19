@@ -47,6 +47,7 @@ const INSTANCE = {
 test("an instance spec must name a repro and a gold hunk", () => {
   assert.deepEqual(validateInstance(INSTANCE), []);
   assert.match(validateInstance({ ...INSTANCE, id: "" }).join("\n"), /missing "id"/);
+  assert.match(validateInstance({ ...INSTANCE, source: "bugsinpy" }).join("\n"), /unknown source/);
   assert.match(validateInstance({ ...INSTANCE, repro: {} }).join("\n"), /repro needs a "command"/);
   assert.match(
     validateInstance({ ...INSTANCE, expect: { goldHunks: [] } }).join("\n"),

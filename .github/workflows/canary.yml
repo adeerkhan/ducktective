@@ -1,0 +1,38 @@
+name: Mutation canary
+
+# Tier-1 (design v3 §2): mutate a tiny target, keep the mutants its tests kill,
+# and score whether the spine's first lead is the line the canary broke. It is a
+# regression alarm — a drop between nights means ranking broke — and
+# it is not evidence the product works on real bugs. That needs the Tier-2
+# benchmark. Kept out of the PR path so it never blocks a change.
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run canary
+      - name: Keep the ledger
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-ledger
+          path: evals/.work/canary.jsonl
+          if-no-files-found: warn

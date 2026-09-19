@@ -187,6 +187,7 @@ The JSONL is machine-readable on purpose: another skill can read the same file, 
 | Guards             | `npm test`                       | prose cannot drift from code: one `SKILL.md`, every shipped tool documented, the architecture reference tracked, no shipped file naming a retired tool           |
 | Unit + integration | `npm test`                       | frame order, the verdict policy and its schema parity, id containment, policy refusals, tree-kill, bounded capture, installer behaviour, cause recurrence        |
 | Behaviour corpus   | `npm run eval`                   | the tools do what the docs say against real pytest/unittest/`node:test`/`coverage.py` runs — **self-authored cases**, so a regression net, not evidence of value |
+| Mutation canary    | `npm run canary`                 | candidate ranking did not regress since last night — **mutants are easier than real faults**, so a regression alarm, never product evidence                      |
 | Benchmark          | `npm test` (`bench/`)            | the C1–C12 capture path is correct — **not** a result; the arm runner is not built yet                                                                           |
 | Run log            | `node evals/runlog.mjs --report` | whether it helps real bugs: M1–M4, each row tagged `real` or `constructed`                                                                                       |
 

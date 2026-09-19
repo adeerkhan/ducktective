@@ -11,7 +11,7 @@ bench/                        comparative benchmark scaffold (metrics; arm runne
 docs/                         design v2, landscape (ref-work), reference (architecture),
                               guide, implementation plan, critique
 scripts/                      repo guards
-evals/                        behaviour corpus + run log
+evals/                        behaviour corpus, mutation canary, run log
 assets/                       hero image
 ```
 
@@ -28,6 +28,7 @@ Run from the repo root, then `npm install` once:
 | ------------------------------------------------------------------- | -------------------------------------------------------- |
 | `npm test`                                                          | the skill's tool tests + the repo guards (`node --test`) |
 | `npm run eval`                                                      | behaviour corpus in `evals/` (real pytest + coverage.py) |
+| `npm run canary`                                                    | mutation canary: did ranking regress?                    |
 | `npm run lint` / `npm run format`                                   | gates, both in CI                                        |
 | `node skills/ducktective/bin/install.mjs --target claude --dry-run` | what ships, and where                                    |
 

@@ -78,6 +78,8 @@ export function validateInstance(instance) {
     if (instance?.[key] === undefined || instance[key] === "") bad.push(`missing "${key}"`);
   };
   for (const key of ["id", "source", "repo", "repro"]) need(key);
+  if (instance?.source && !SOURCES[instance.source])
+    bad.push(`unknown source "${instance.source}"`);
   if (instance?.repro && !instance.repro.command) bad.push('repro needs a "command"');
   const gold = instance?.expect?.goldHunks;
   if (!Array.isArray(gold) || gold.length === 0)
