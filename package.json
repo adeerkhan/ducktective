@@ -1,10 +1,17 @@
 {
   "name": "ducktective",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
+  "description": "An Agent Skill that stops a coding agent from filing a confident, unverified root cause.",
+  "license": "MIT",
+  "homepage": "https://github.com/adeerkhan/ducktective#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adeerkhan/ducktective.git"
+  },
   "type": "module",
   "scripts": {
-    "test": "node --test \"scripts/*.test.mjs\" \"skills/**/*.test.mjs\"",
+    "test": "node --test \"scripts/*.test.mjs\" \"skills/**/*.test.mjs\" \"bench/*.test.mjs\"",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

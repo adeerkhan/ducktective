@@ -38,6 +38,7 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { CASE_ID, clip, repoRoot, SCHEMA, validateSchema, writeAtomic } from "./lib/case-file.mjs";
 import { run, wasNotRunnable } from "./lib/exec.mjs";
+import { classifyVerdict } from "./lib/verdict-policy.mjs";
 
 const USAGE = `usage: run_check.mjs --file DRAFT.json --candidate RANK|LOCATION --predict pass|fail [options]
   --yes                execute the check (default: dry run, prints it and exits 3)
@@ -281,54 +282,8 @@ export function materialize(check, { lang, repo, caseId, rank, dryRun = false })
  * @param {{controlPassed?: boolean, probeFlipped?: boolean|null}} disc
  *   `false` means a comparable probe did not flip; `null` means no valid probe.
  */
-export function classify(
-  predicted,
-  checkResult,
-  controlResult,
-  timeout = 0,
-  { controlPassed = false, probeFlipped = null } = {},
-) {
-  const notes = [];
-  const inconclusive = (why) => {
-    notes.push(why);
-    return { verdict: "inconclusive", notes };
-  };
-  if (checkResult.timedOut)
-    return inconclusive(`the check hung and its process tree was killed after ${timeout} ms`);
-  if (wasNotRunnable(checkResult) || !Number.isInteger(checkResult.code))
-    return inconclusive(
-      "the check command could not be run at all — that is not evidence about the hypothesis",
-    );
-  if (
-    controlResult &&
-    (controlResult.code !== 0 || controlResult.timedOut || wasNotRunnable(controlResult))
-  )
-    return inconclusive(
-      "the control also failed, so this check does not distinguish the broken path from a known-good one (rule 5)",
-    );
-  const held = (predicted === "pass") === (checkResult.code === 0);
-  if (!held) return { verdict: "falsified", notes };
-  if (probeFlipped === false)
-    return {
-      verdict: "inconclusive_vacuous",
-      notes: [
-        ...notes,
-        "the check's outcome did not change when the accused line was neutered — no sensitivity detected under this mutation; this is not proof the check never touched the line",
-      ],
-    };
-  if (predicted === "pass" && probeFlipped !== true)
-    return inconclusive(
-      "a pass prediction requires a flipped probe — re-run with --probe; a passed control alone cannot rule out an always-pass check",
-    );
-  if (!controlPassed && probeFlipped !== true)
-    return inconclusive(
-      "the check agreed with the prediction but has no discrimination receipt — re-run with --control or --probe (rule 5)",
-    );
-  if (probeFlipped === true)
-    notes.push(
-      "the flip detects sensitivity under this mutation, not proof the accused line is faulty",
-    );
-  return { verdict: "confirmed", notes };
+export function classify(predicted, checkResult, controlResult, timeout = 0, disc = {}) {
+  return classifyVerdict(predicted, checkResult, controlResult, timeout, disc);
 }
 
 /** `"app.py:41 totals()"` → `{file, line}`; null when the id is not a location. */
@@ -777,13 +732,21 @@ async function main() {
       ? { control: opts.control, control_exit_code: controlResult?.code ?? null }
       : {}),
     // Record what the probe showed, including "it could not run": a missing
-    // receipt has to be visible to write_case, not merely absent.
+    // receipt has to be visible to write_case, not merely absent. `attempts`
+    // keeps the per-strategy outcome (artifact vs flip vs no-change) so the
+    // artifact rate is computable from the store, which C7 needs.
     ...(opts.probe && probed
       ? {
           probe: `${probed.desc ?? "probe not run"}${probed.reason ? ` — ${probed.reason}` : ""}`,
           probe_exit_code: Number.isInteger(probed.exitCode) ? probed.exitCode : null,
           probe_flipped:
             probed.flipped === true ? "yes" : probed.flipped === false ? "no" : "not-run",
+          ...(Array.isArray(probed.attempts) && probed.attempts.length
+            ? {
+                probe_attempts: probed.attempts,
+                probe_artifact: probed.attempts.some((a) => /artifact/.test(a)),
+              }
+            : {}),
         }
       : {}),
   });
@@ -810,6 +773,9 @@ async function main() {
               probe_flipped:
                 probed?.flipped === true ? "yes" : probed?.flipped === false ? "no" : "not-run",
               probe_exit_code: Number.isInteger(probed?.exitCode) ? probed.exitCode : null,
+              ...(Array.isArray(probed?.attempts) && probed.attempts.length
+                ? { probe_attempts: probed.attempts }
+                : {}),
             }
           : {}),
         control_exit_code: controlResult?.code ?? null,

@@ -86,19 +86,24 @@ function parseArgs(argv) {
   return opts;
 }
 
-/** Every file that makes up an installed skill, relative to the skill root. */
-export function skillFiles(root) {
+/** Every file under `dir`, POSIX-relative to it, optionally skipping names. */
+function walkRel(dir, skip = null) {
   const out = [];
-  const walk = (dir) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (IGNORE.has(entry.name)) continue;
-      const path = join(dir, entry.name);
+  const walk = (d) => {
+    for (const entry of readdirSync(d, { withFileTypes: true })) {
+      if (skip?.has(entry.name)) continue;
+      const path = join(d, entry.name);
       if (entry.isDirectory()) walk(path);
-      else out.push(relative(root, path).replaceAll("\\", "/"));
+      else out.push(relative(dir, path).replaceAll("\\", "/"));
     }
   };
-  walk(root);
-  return out.sort();
+  walk(dir);
+  return out;
+}
+
+/** Every file that makes up an installed skill, relative to the skill root. */
+export function skillFiles(root) {
+  return walkRel(root, IGNORE).sort();
 }
 
 const hash = (buf) => createHash("sha256").update(buf).digest("hex").slice(0, 12);
@@ -199,7 +204,7 @@ async function main() {
     console.error(`\nDRY RUN — nothing written. Re-run without --dry-run to install.`);
   else
     console.error(
-      `\nNext: restart your agent, then say "Ducktective, investigate this failing test." Verify with:\n  node ${join(opts.dest, "scripts", "query_memory.mjs")} --help`,
+      `\nNext: restart your agent, then say "Ducktective, investigate this failing test." Verify the install with:\n  node ${join(opts.dest, "scripts", "reproduce.mjs")} --help`,
     );
 }
 
@@ -212,18 +217,7 @@ if (process.argv[1] && pathToFileURL(realpathOr(process.argv[1])).href === impor
 
 /** Every file currently installed under `dest`, in the same relative form `skillFiles` uses. */
 function listInstalled(dest) {
-  if (!existsSync(dest)) return [];
-  const out = [];
-  const walk = (dir, rel) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const abs = join(dir, entry.name);
-      const r = rel ? `${rel}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) walk(abs, r);
-      else out.push(r);
-    }
-  };
-  walk(dest, "");
-  return out;
+  return existsSync(dest) ? walkRel(dest) : [];
 }
 
 /** node realpaths `import.meta.url` but leaves argv[1] as typed; compare like for like. */

@@ -1,15 +1,18 @@
 # Ducktective
 
-One deliverable: an Agent Skill (a prompt contract plus four zero-dependency
-programs).
+One deliverable: an Agent Skill (a prompt contract, four core programs and one
+composition entry point).
 
 ```
 skills/ducktective/SKILL.md   the product: the contract
-skills/ducktective/scripts/   reproduce · bisect · run_check · write_case
-docs/                         the plan (ducktective-design.md v2), the landscape
-                              critique (ref-work.md), the reference (architecture.md)
+skills/ducktective/scripts/   reproduce · bisect · run_check · write_case · check (+ lib/)
+skills/ducktective/bin/       the installer
+bench/                        comparative benchmark scaffold (metrics; arm runner not built)
+docs/                         design v2, landscape (ref-work), reference (architecture),
+                              guide, implementation plan, critique
 scripts/                      repo guards
 evals/                        behaviour corpus + run log
+assets/                       hero image
 ```
 
 There is no website, no plugin manifest and no npm workspace. Those were deleted on
@@ -47,8 +50,9 @@ The scripts are plain `.mjs`, run with `node`; `node --check` is the type layer.
    this project exists to catch, in its own tooling.
 4. **The store is append-mostly** — one line per case id in
    `<repo>/.ducktective/cases.jsonl`, rewritten in place, plus a Markdown mirror a
-   human reads in 30 seconds. A file piled with copies of every half-answer is worse
-   tomorrow.
+   human reads in 30 seconds, plus a cause index in `.ducktective/causes.jsonl`
+   where a repeated root cause increments a count. A file piled with copies of every
+   half-answer is worse tomorrow.
 5. **No claim without a check.** Verify behaviour in a test or a real run before
    reporting it done; prose and screenshots are not evidence. Every number on a page
    carries a source and a date, and every metric states its provenance.
@@ -93,3 +97,26 @@ Rules:
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
 - **Never let a tool add `docs/` to `.gitignore`.** It has happened four times in this repo family; `docs/architecture.md` is read by the guard suite and `git add -f docs` is the repair, not the ignore rule.
+
+<!-- HABIT-EXPERIMENT:START (added 2026-09-17, safe to delete wholesale) -->
+
+## Habit experiment rules (temporary, removable)
+
+This block exists only to check whether an OpenCode session follows AGENTS.md
+rules without being told in the prompt. It is test scaffolding, not ducktective
+guidance. Delete the whole marked block when the experiment is over, or run:
+`node C:/Users/adeer/github/openchamber-habit/scripts/spike0.mjs remove C:/Users/adeer/github/ducktective/AGENTS.md`
+
+1. Every answer to "what is 2+2" must be exactly `4 (spike-zero)` — nothing else.
+2. When asked to greet, reply with exactly `hello from AGENTS.md` — nothing else.
+3. End every reply with the line `habit-rule-ok`.
+
+Scoring (decided in advance, per habit-architecture.md §4):
+
+- 1 point per rule followed, per session. A session passes at 3/3.
+- Three fresh sessions; the project file passes only if all three are 3/3.
+- A no-rules baseline must score 0/3. If a rule is followed without the rules
+  file, that comparison is void — the rule tests nothing.
+- Report the counts as measured. Do not retry until green.
+
+<!-- HABIT-EXPERIMENT:END -->

@@ -75,6 +75,15 @@
             "description": "yes = the check's outcome changed when the accused line was neutered, so the check depends on it. no = it did not change, so the check proved nothing about that line (verdict: inconclusive_vacuous). not-run = never probed.",
             "enum": ["yes", "no", "not-run"]
           },
+          "probe_attempts": {
+            "description": "Per-strategy probe outcomes, e.g. [\"delete: artifact (not comparable)\", \"neutralize: flipped\"]. Recorded so the artifact rate is computable from the case file (metric C7) instead of being thrown away.",
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "probe_artifact": {
+            "description": "True when at least one neuter strategy produced a parse/undefined-name artifact rather than a comparable run. Artifacts are not evidence; this is recorded so a high artifact rate is visible.",
+            "type": "boolean"
+          },
           "verified_exit_code": {
             "description": "Exit code of the re-executed check (run_check --verify).",
             "type": ["number", "null"]
@@ -93,6 +102,32 @@
     "status": {
       "description": "`open` exists so a mid-flight case can be persisted; SKILL.md forbids patching from it. A run that never executed is status `unverified` with the harness note in leading_hypothesis — `error` describes the reproduction, not the verdict.",
       "enum": ["open", "confirmed", "does_not_reproduce", "exhausted", "unverified"]
+    },
+    "cause_hash": {
+      "description": "Stable identity of the root cause (location + normalised hypothesis + repro command + top frames), derived by writeCase, not typed. Two investigations of the same fault share it, so the store counts recurrence instead of piling near-duplicates.",
+      "type": "string"
+    },
+    "cause_key": {
+      "description": "The readable identity tuple behind cause_hash, kept for audit.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "count": {
+      "description": "How many distinct cases in this repo share this cause_hash. Derived, never hand-typed.",
+      "type": "number"
+    },
+    "cause_confidence": {
+      "description": "The derived 0..1 cause-confidence, persisted by writeCase so a reader that cannot run the policy still sees the rating. Recomputed from the receipts, never hand-typed.",
+      "type": "number"
+    },
+    "not_reportable": {
+      "description": "The reason this case may not be surfaced as a finding (status not reportable, or confidence below the floor), or null when it is reportable. Derived by writeCase; the presence of a value is a gate, not a note.",
+      "type": ["string", "null"]
+    },
+    "why_violations": {
+      "description": "E5 consistency findings: a `why` or `hypothesis` that cites a file:line appearing nowhere in this case's own stack, covered sites, or candidate locations. Recorded, not refused, so metric C9 can be measured first.",
+      "type": "array",
+      "items": { "type": "string" }
     },
     "notes": { "type": "string" }
   }

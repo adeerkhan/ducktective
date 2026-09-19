@@ -145,7 +145,6 @@ vite.config.ts.timestamp-*
 
 # --- Ducktective workspace -------------------------------------------------
 node_modules/
-site/dist/
 
 # Local-only research clones (each has its own .git).
 ref/

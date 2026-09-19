@@ -879,6 +879,10 @@ test("--probe: a flipped check is the receipt that confirms it", (t) => {
   const cand = decided(d.read(), 1);
   assert.equal(cand.probe_flipped, "yes");
   assert.match(cand.probe, /src\/lib\.mjs:3 commented out/);
+  assert.ok(
+    Array.isArray(cand.probe_attempts) && cand.probe_attempts.some((a) => /flipped/.test(a)),
+    `the per-strategy outcome must be recorded for C7: ${JSON.stringify(cand.probe_attempts)}`,
+  );
   assert.ok(!existsSync(join(d.repo, "src", "lib.mjs.bak")), "the tree is never touched");
   assert.equal(
     readFileSync(join(d.repo, "src", "lib.mjs"), "utf8"),

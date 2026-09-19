@@ -10,6 +10,12 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  candidateViolations,
+  caseReportability,
+  causeIdentity,
+  whyViolations,
+} from "./verdict-policy.mjs";
 
 /** The schema is the single source of shape; SKILL.md names these fields too. */
 export const SCHEMA = JSON.parse(
@@ -107,96 +113,11 @@ export function policyViolations(c) {
     if (c.status === "confirmed") bad.push(`status "confirmed" requires outcome "reproduced"`);
   }
 
-  // Rule 4+6: a verdict is a check that ran, printed, and was recorded. A
-  // `pending` candidate is an unexamined lead, so it owes nothing yet — that is
-  // what makes persisting an `open` case mid-investigation legal.
-  for (const cand of c.candidates ?? []) {
-    if (cand.verdict !== "pending" && !text(cand.hypothesis)) {
-      bad.push(`candidate "${cand.location}": verdict "${cand.verdict}" with no hypothesis stated`);
-    }
-    if (["confirmed", "falsified", "inconclusive_vacuous"].includes(cand.verdict)) {
-      if (!text(cand.check))
-        bad.push(`candidate "${cand.location}": verdict "${cand.verdict}" with no check to run`);
-      if (!text(cand.evidence))
-        bad.push(
-          `candidate "${cand.location}": verdict "${cand.verdict}" with no captured output (rule 6)`,
-        );
-      // A verdict is an executed oracle, not an opinion: `run_check.mjs` records
-      // what it predicted and what the process actually returned, so a verdict
-      // typed by hand has nowhere to hide.
-      if (cand.predicted !== "pass" && cand.predicted !== "fail") {
-        bad.push(
-          `candidate "${cand.location}": verdict "${cand.verdict}" has no "predicted" oracle — record it with run_check.mjs (rule 6)`,
-        );
-      } else if (typeof cand.check_exit_code !== "number") {
-        bad.push(
-          `candidate "${cand.location}": verdict "${cand.verdict}" but the check has no recorded exit code`,
-        );
-      } else {
-        const passed = cand.check_exit_code === 0;
-        const held = cand.predicted === "pass" ? passed : !passed;
-        const wanted = held ? "confirmed" : "falsified";
-        if (cand.verdict === "inconclusive_vacuous" ? !held : cand.verdict !== wanted) {
-          bad.push(
-            `candidate "${cand.location}": verdict "${cand.verdict}" contradicts its own check (predicted ${cand.predicted}, exit ${cand.check_exit_code} ⇒ ${wanted})`,
-          );
-        }
-      }
-      // Metric #2 enforcement: --verify exists so a claim can be re-tested.
-      // Recording the second run and then filing the original verdict anyway is
-      // the confident wrong answer this skill exists to catch.
-      if (cand.verified_verdict != null && cand.verified_verdict !== cand.verdict) {
-        bad.push(
-          `candidate "${cand.location}": the second run said "${cand.verified_verdict}" — a claim that did not survive re-execution cannot be filed as "${cand.verdict}"`,
-        );
-      }
-      // Rule 5: an oracle that fails on a known-good path discriminates nothing.
-      if (
-        cand.verdict === "confirmed" &&
-        typeof cand.control_exit_code === "number" &&
-        cand.control_exit_code !== 0
-      ) {
-        bad.push(
-          `candidate "${cand.location}": the control command also failed (exit ${cand.control_exit_code}) — bad oracle, it distinguishes nothing (rule 5)`,
-        );
-      }
-      // A prediction that matches and a control that passes both prove only that
-      // the check AGREES. Nothing in that pair requires the check's outcome to
-      // depend on the line being accused — an always-pass check plus `--predict
-      // pass` was storable as `confirmed` with full provenance. A confirmed
-      // verdict now owes a discrimination receipt: a passed control (not
-      // always-fail) or a probe that flipped (not always-pass).
-      if (
-        cand.verdict === "confirmed" &&
-        cand.control_exit_code !== 0 &&
-        cand.probe_flipped !== "yes"
-      ) {
-        bad.push(
-          `candidate "${cand.location}": "confirmed" with no discrimination receipt — run it with --control or --probe; a check that never touches the accused line agrees with any prediction (rule 5)`,
-        );
-      }
-      if (cand.verdict === "confirmed" && cand.probe_flipped === "no") {
-        bad.push(
-          `candidate "${cand.location}": "confirmed" contradicts the non-flip (probe_flipped "no") — no sensitivity detected under this mutation`,
-        );
-      }
-      if (
-        cand.verdict === "confirmed" &&
-        cand.predicted === "pass" &&
-        cand.probe_flipped !== "yes"
-      ) {
-        bad.push(
-          `candidate "${cand.location}": a pass prediction requires a flipped probe; a passed control alone cannot rule out an always-pass check`,
-        );
-      }
-      // `inconclusive_vacuous` is the probe's finding, not a word for a weak check.
-      if (cand.verdict === "inconclusive_vacuous" && cand.probe_flipped !== "no") {
-        bad.push(
-          `candidate "${cand.location}": "inconclusive_vacuous" requires probe_flipped "no" — say what the probe showed, or use "inconclusive"`,
-        );
-      }
-    }
-  }
+  // Rule 4+6 and the receipt arithmetic live in verdict-policy.mjs, shared with
+  // run_check.mjs classify(), so the tool cannot compute a verdict the store
+  // refuses (or the reverse). A `pending` candidate is an unexamined lead, so it
+  // owes nothing yet — that is what makes persisting an `open` case legal.
+  for (const cand of c.candidates ?? []) bad.push(...candidateViolations(cand));
 
   // A cause, or strong confidence, is a claim: it only travels with a verdict
   // that ran. High confidence on an `open` case is the exact artifact this skill
@@ -251,11 +172,17 @@ export function clip(s, n = 800) {
  */
 export function renderMarkdown(c) {
   const r = c.reproduction ?? {};
+  const report = caseReportability(c);
+  const confidenceStamp =
+    report.confidence > 0 || report.reportable
+      ? ` · **Cause confidence:** ${report.confidence}${report.reportable ? "" : ` _(not reportable: ${report.reason})_`}`
+      : "";
   const lines = [
     `# ${c.id} — ${c.symptom.split("\n")[0].slice(0, 80) || "untitled symptom"}`,
     "",
-    `**Status:** \`${c.status}\` · **Confidence:** ${c.confidence} · **Opened:** ${c.opened_at}`,
+    `**Status:** \`${c.status}\` · **Confidence:** ${c.confidence}${confidenceStamp} · **Opened:** ${c.opened_at}`,
     `**Reproduction:** \`${r.command}\` → \`${r.outcome}\` in ${Math.round(r.duration_ms ?? 0)} ms (exit ${r.exit_code ?? "?"})`,
+    c.cause_hash ? `**Cause:** \`${c.cause_hash}\` (seen ${c.count ?? 1}×)` : null,
     "",
     "## Symptom",
     "",
@@ -291,8 +218,15 @@ export function renderMarkdown(c) {
           Number.isInteger(cand.probe_exit_code) ? `, check exit ${cand.probe_exit_code}` : ""
         }`,
       );
+    if ((cand.probe_attempts ?? []).length)
+      block.push(`*Probe strategies:* ${cand.probe_attempts.join("; ")}`);
     if (cand.evidence) block.push("", "*Evidence:*", "", "```", clip(cand.evidence, 900), "```");
     lines.push(...block, "");
+  }
+  if ((c.why_violations ?? []).length) {
+    lines.push("### Consistency warnings (E5)", "");
+    for (const w of c.why_violations) lines.push(`- ${w}`);
+    lines.push("");
   }
   lines.push("## Finding", "");
   if (c.confirmed_cause) lines.push(`**Confirmed cause:** ${c.confirmed_cause}`, "");
@@ -360,20 +294,96 @@ export function writeAtomic(path, body) {
   renameSync(tmp, path);
 }
 
+/** The cause index: one line per distinct root cause, upserted by hash. */
+export const CAUSE_INDEX = "causes.jsonl";
+
+/** The cause index, read as raw lines. Corrupt lines are preserved on rewrite. */
+export function readCauseIndex(repoDir) {
+  const path = join(repoDir, STORE_DIR, CAUSE_INDEX);
+  const raw = existsSync(path)
+    ? readFileSync(path, "utf8")
+        .split(/\r?\n/)
+        .filter((l) => l.trim())
+    : [];
+  const rows = [];
+  raw.forEach((line) => {
+    try {
+      rows.push(JSON.parse(line));
+    } catch {
+      rows.push(null);
+    }
+  });
+  return { path, raw, rows };
+}
+
+/** Every distinct cause in a repo, most recurrent first — the preventative read. */
+export function listCauses(repoDir) {
+  return readCauseIndex(repoDir)
+    .rows.filter(Boolean)
+    .map((r) => ({
+      cause_hash: r.cause_hash,
+      cause_key: r.cause_key ?? [],
+      count: r.count ?? (r.case_ids ?? []).length,
+      case_ids: r.case_ids ?? [],
+      last_seen: r.last_seen ?? "",
+    }))
+    .sort((a, b) => b.count - a.count || String(a.cause_hash).localeCompare(String(b.cause_hash)));
+}
+
 /**
- * Append (or update in place, when the same id is re-submitted) one case file.
+ * Append (or update in place, when the same id is re-submitted) one case file,
+ * and upsert its cause in the recurrence index.
  *
  * The JSONL is the machine-readable record other skills may read one day; the
  * Markdown is what a human actually opens tomorrow morning. Both are written
- * here so they can never disagree.
+ * here so they can never disagree. `cause_hash`/`cause_key`/`count` are derived
+ * here, not typed by a model, so a repeated root cause becomes a recurrence
+ * count instead of a near-duplicate row.
  */
 export function writeCase(c, repoDir) {
   // Callers that skip validation (my own tests, any host editing by hand) still
   // cannot aim a write outside the store.
   if (!CASE_ID.test(c?.id ?? ""))
     throw new Error(`refusing to store a case with an unsafe id: ${JSON.stringify(c?.id)}`);
+
   const dir = join(repoDir, STORE_DIR);
   mkdirSync(join(dir, "cases"), { recursive: true });
+
+  // E5: record (do not refuse) a why/hypothesis that cites a location nowhere in
+  // this case's own evidence. The rate is metric C9; a gate waits on the data.
+  const why = whyViolations(c);
+  if (why.length) c.why_violations = why;
+
+  const { hash, key } = causeIdentity(c);
+  const index = readCauseIndex(repoDir);
+  const rec = index.rows.find((r) => r?.cause_hash === hash);
+  const caseIds = new Set(rec?.case_ids ?? []);
+  caseIds.add(c.id);
+  const entry = {
+    cause_hash: hash,
+    cause_key: key,
+    case_ids: [...caseIds],
+    count: caseIds.size,
+    last_seen: new Date().toISOString().slice(0, 10),
+  };
+  const prev = index.raw.findIndex((l) => {
+    try {
+      return JSON.parse(l).cause_hash === hash;
+    } catch {
+      return false;
+    }
+  });
+  if (prev >= 0) index.raw[prev] = JSON.stringify(entry);
+  else index.raw.push(JSON.stringify(entry));
+  writeAtomic(index.path, index.raw.join("\n") + "\n");
+
+  c.cause_hash = hash;
+  c.cause_key = key;
+  c.count = entry.count;
+  const report = caseReportability(c);
+  c.cause_confidence = report.confidence;
+  c.not_reportable = report.reason || null;
+
   const { path, raw, rows, corrupt } = readStore(repoDir);
   const line = JSON.stringify(c);
   const idx = rows.findIndex((r) => r?.id === c.id);
@@ -390,6 +400,8 @@ export function writeCase(c, repoDir) {
     markdown: md,
     replaced: idx >= 0,
     preservedCorruptLines: corrupt.length,
+    cause_hash: hash,
+    cause_count: entry.count,
   };
 }
 
