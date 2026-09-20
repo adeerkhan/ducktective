@@ -172,3 +172,4 @@ cov-*.json
 .coverage.*
 htmlcov/
 graphify-out/
+docs/

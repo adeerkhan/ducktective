@@ -22,6 +22,8 @@ import {
   expectedVerdict,
   predictionHeld,
   alignedWith,
+  blindOverturn,
+  blindOverturned,
   whyViolations,
 } from "../scripts/lib/verdict-policy.mjs";
 
@@ -186,6 +188,58 @@ test("reportable is derived, and a non-confirmed case is never reportable", () =
   };
   assert.equal(caseReportability(confirmed).reportable, true);
   assert.match(caseReportability({ ...confirmed, status: "unverified" }).reason, /not reportable/);
+});
+
+// --- the blind re-derivation (design v3 E2) --------------------------------
+
+/** A confirmed candidate that already passes every other rule. */
+const confirmedCandidateFixture = () => ({
+  rank: 1,
+  location: "app.py:6 total()",
+  hypothesis: "end defaults to len(rows) - 1, dropping the final row",
+  check: 'python -c "assert total([1,2,3,4]) == 10"',
+  predicted: "fail",
+  check_exit_code: 1,
+  control_exit_code: 0,
+  verdict: "confirmed",
+  evidence: "AssertionError",
+});
+
+test("a blind re-derivation that disagrees demotes a confirmed claim", () => {
+  const overturn = {
+    ...confirmedCandidateFixture(),
+    blind_check: { verdict: "falsified", check: "a second, independent check" },
+  };
+  assert.match(candidateViolations(overturn).join("\n"), /blind re-derivation said/);
+  assert.match(candidateViolations(overturn).join("\n"), /"unreplicated"/);
+
+  const recorded = { ...overturn, verdict: "unreplicated" };
+  assert.deepEqual(candidateViolations(recorded), [], "the demoted record is storable");
+  assert.equal(blindOverturned(recorded), true);
+});
+
+test("unreplicated owes a non-confirming blind receipt", () => {
+  const bare = { ...confirmedCandidateFixture(), verdict: "unreplicated" };
+  assert.match(candidateViolations(bare).join("\n"), /requires a blind_check receipt/);
+  const contradicted = { ...bare, blind_check: { verdict: "confirmed" } };
+  assert.match(candidateViolations(contradicted).join("\n"), /contradicts a confirmed blind_check/);
+});
+
+test("a confirming blind check is a receipt and raises confidence", () => {
+  const cand = { ...confirmedCandidateFixture(), blind_check: { verdict: "confirmed" } };
+  assert.deepEqual(candidateViolations(cand), []);
+  assert.equal(blindOverturned(cand), false);
+  assert.equal(causeConfidence(cand), 0.7, "0.3 base + 0.2 control + 0.2 blind");
+});
+
+test("blindOverturn reports whether any candidate was overturned", () => {
+  assert.equal(blindOverturn({ candidates: [confirmedCandidateFixture()] }), false);
+  assert.equal(
+    blindOverturn({
+      candidates: [confirmedCandidateFixture(), { verdict: "unreplicated" }],
+    }),
+    true,
+  );
 });
 
 // --- cause identity and recurrence -----------------------------------------

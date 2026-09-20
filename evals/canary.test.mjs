@@ -35,6 +35,19 @@ test("planMutations finds operators per line and skips comments", () => {
   );
 });
 
+test("operators do not match inside each other or an arrow", () => {
+  // `>(?!=)` used to rewrite the `>` in `=>`, and `==(?!=)` the tail of `===`,
+  // producing mutants that never parsed (14 of 20 on a real module).
+  const src = "const f = (a) => a === 1;\nconst g = (a, b) => a == b;\n";
+  assert.deepEqual(
+    planMutations(src).map((m) => [m.line, m.kind]),
+    [
+      [1, "strict-eq"],
+      [2, "loose-eq"],
+    ],
+  );
+});
+
 test("applyMutation changes exactly the targeted line", () => {
   const mutated = applyMutation(SRC, { line: 3, kind: "gt" });
   assert.equal(mutated.split("\n")[2], "  return n >= 0;");

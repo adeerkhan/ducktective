@@ -40,6 +40,8 @@ export const VERDICT = Object.freeze({
   CONFIRMED: "confirmed",
   INCONCLUSIVE: "inconclusive",
   VACUOUS: "inconclusive_vacuous",
+  /** A held first run that a stripped-context re-derivation did not confirm. */
+  UNREPLICATED: "unreplicated",
 });
 
 export const VERDICTS = Object.freeze(Object.values(VERDICT));
@@ -146,7 +148,8 @@ export function candidateViolations(cand) {
   if (
     verdict === VERDICT.CONFIRMED ||
     verdict === VERDICT.FALSIFIED ||
-    verdict === VERDICT.VACUOUS
+    verdict === VERDICT.VACUOUS ||
+    verdict === VERDICT.UNREPLICATED
   ) {
     if (!text(cand.check))
       bad.push(`candidate "${loc}": verdict "${verdict}" with no check to run`);
@@ -161,7 +164,10 @@ export function candidateViolations(cand) {
     } else {
       const held = predictionHeld(cand.predicted, cand.check_exit_code);
       const wanted = expectedVerdict(cand.predicted, cand.check_exit_code);
-      if (verdict === VERDICT.VACUOUS ? !held : verdict !== wanted)
+      // A vacuous probe and a blind non-confirmation both require the first run
+      // to have agreed; they differ in what demoted them.
+      const heldRequired = verdict === VERDICT.VACUOUS || verdict === VERDICT.UNREPLICATED;
+      if (heldRequired ? !held : verdict !== wanted)
         bad.push(
           `candidate "${loc}": verdict "${verdict}" contradicts its own check (predicted ${cand.predicted}, exit ${cand.check_exit_code} ⇒ ${wanted})`,
         );
@@ -205,6 +211,26 @@ export function candidateViolations(cand) {
         `candidate "${loc}": "inconclusive_vacuous" requires probe_flipped "no" — say what the probe showed, or use "inconclusive"`,
       );
 
+    // The blind re-derivation (design v3 E2): a fresh-context check that did not
+    // confirm the claim demotes it. The tool cannot run the model, so it enforces
+    // the receipt the host produces.
+    if (
+      verdict === VERDICT.CONFIRMED &&
+      cand.blind_check &&
+      cand.blind_check.verdict !== "confirmed"
+    )
+      bad.push(
+        `candidate "${loc}": the blind re-derivation said "${cand.blind_check.verdict}" — record it as "unreplicated", not "confirmed"`,
+      );
+    if (verdict === VERDICT.UNREPLICATED) {
+      if (!cand.blind_check || !cand.blind_check.verdict)
+        bad.push(
+          `candidate "${loc}": "unreplicated" requires a blind_check receipt — re-derive the check with only the symptom and location`,
+        );
+      else if (cand.blind_check.verdict === "confirmed")
+        bad.push(`candidate "${loc}": "unreplicated" contradicts a confirmed blind_check`);
+    }
+
     // The derived rating must clear the reportable floor before a cause is named.
     const floor = CAUSE_CONFIDENCE_FLOOR[VERDICT.CONFIRMED];
     const confidence = causeConfidence(cand);
@@ -223,6 +249,7 @@ export function candidateViolations(cand) {
  *   base             0.30  the prediction agreed with the executed check
  *   + control        0.20  a known-good path passed
  *   + probe flip     0.30  the check's outcome depends on the accused line
+ *   + blind confirm  0.20  a stripped-context re-derivation reached the same claim
  *   + survived rerun 0.20  the claim held in a fresh process
  *
  * A candidate that is not `confirmed` contributes nothing: a demoted lead is
@@ -233,8 +260,28 @@ export function causeConfidence(cand) {
   let score = 0.3;
   if (cand.control_exit_code === 0) score += 0.2;
   if (cand.probe_flipped === "yes") score += 0.3;
+  if (cand.blind_check?.verdict === "confirmed") score += 0.2;
   if (cand.verified_verdict === VERDICT.CONFIRMED) score += 0.2;
   return Math.round(Math.min(1, score) * 100) / 100;
+}
+
+/**
+ * Did the blind re-derivation overturn this candidate? A `confirmed` whose
+ * receipt disagrees, or an `unreplicated` that exists because of one.
+ */
+export function blindOverturned(cand) {
+  if (!cand) return false;
+  if (cand.verdict === VERDICT.UNREPLICATED) return true;
+  return (
+    cand.verdict === VERDICT.CONFIRMED &&
+    !!cand.blind_check &&
+    cand.blind_check.verdict !== "confirmed"
+  );
+}
+
+/** Did any candidate in this case get overturned by its blind check? */
+export function blindOverturn(c) {
+  return (c?.candidates ?? []).some(blindOverturned);
 }
 
 /** The confirmation that names the cause, if the case has one. */

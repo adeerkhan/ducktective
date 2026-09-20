@@ -114,6 +114,32 @@ test("C2 is confirmed-but-missing-gold, and C1 is confirmed-and-hit", () => {
   assert.equal(bare.C2_false_confirm.pct, 50, "one of two bare confirmations missed gold");
 });
 
+test("C8 is blind-checker overturns over blind-checked rows", () => {
+  const rows = [
+    {
+      instance: "i",
+      arm: "skill",
+      confirmed: true,
+      blind_checked: true,
+      blind_overturned: true,
+      tokens: 1,
+      wall_ms: 1,
+    },
+    {
+      instance: "i",
+      arm: "skill",
+      confirmed: false,
+      blind_checked: true,
+      blind_overturned: false,
+      tokens: 1,
+      wall_ms: 1,
+    },
+  ];
+  const m = computeMetrics(rows);
+  assert.deepEqual(m.C8_blind_overturn, { num: 1, den: 2, pct: 50 });
+  assert.deepEqual(m.C9_why_consistency, { num: 0, den: 2, pct: 0 });
+});
+
 test("the ladder metrics have honest empty-denominator behaviour", () => {
   const m = computeMetrics([
     { instance: "i", arm: "skill", confirmed: false, abstained: true, tokens: 1, wall_ms: 1 },

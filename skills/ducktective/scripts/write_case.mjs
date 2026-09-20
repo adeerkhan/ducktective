@@ -28,12 +28,18 @@ import {
   validateSchema,
   writeCase,
 } from "./lib/case-file.mjs";
-import { caseReportability, whyViolations } from "./lib/verdict-policy.mjs";
+import {
+  blindOverturn,
+  caseReportability,
+  confirmedCandidate,
+  whyViolations,
+} from "./lib/verdict-policy.mjs";
 
 const USAGE = `usage: write_case.mjs [--file CASE.json] [--repo DIR]
-  --file PATH   case file to store (default: JSON on stdin)
-  --repo DIR    repo that owns the store (default: nearest ancestor with .git)
-  --causes      print the recurrence index (distinct root causes, most seen first)`;
+  --file PATH     case file to store (default: JSON on stdin)
+  --repo DIR      repo that owns the store (default: nearest ancestor with .git)
+  --require-blind refuse a "confirmed" case with no confirming blind_check receipt
+  --causes        print the recurrence index (distinct root causes, most seen first)`;
 
 function parseArgs(argv) {
   const opts = {};
@@ -41,6 +47,10 @@ function parseArgs(argv) {
     const flag = argv[i];
     if (flag === "--causes") {
       opts.causes = true;
+      continue;
+    }
+    if (flag === "--require-blind") {
+      opts.requireBlind = true;
       continue;
     }
     if (flag === "--help" || flag === "-h") {
@@ -86,6 +96,13 @@ function main() {
   }
 
   const problems = [...validateSchema(c, SCHEMA), ...policyViolations(c)];
+  if (opts.requireBlind && c.status === "confirmed") {
+    const cand = confirmedCandidate(c);
+    if (!cand || cand.blind_check?.verdict !== "confirmed")
+      problems.push(
+        "--require-blind: the confirmed claim has no confirming blind_check receipt — re-derive the check in a fresh context from the symptom, reproduction, location and check alone",
+      );
+  }
   if (problems.length) {
     console.error(`REFUSED: ${c?.id ?? "case"} cannot be recorded as a finding\n`);
     for (const p of problems) console.error(`  - ${p}`);
@@ -109,6 +126,7 @@ function main() {
         cause_confidence: report.confidence,
         not_reportable: report.reason || null,
         why_violations: why,
+        blind_overturn: blindOverturn(c),
         ...stored,
       },
       null,

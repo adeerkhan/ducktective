@@ -62,14 +62,16 @@ export const USAGE = `usage: canary.mjs [options]
  */
 export const PATTERNS = Object.freeze([
   { kind: "throw-return", re: /\breturn\s+[^;]+;/, to: 'throw new Error("dt-canary");' },
+  // Lookbehinds keep `===`, `!==`, `<=`, `>=` and arrow `=>` out of each other's
+  // matches: `>(?!=)` alone rewrites the `>` in `=>` and the mutant never parses.
   { kind: "strict-eq", re: /===/, to: "!==" },
   { kind: "strict-neq", re: /!==/, to: "===" },
-  { kind: "loose-eq", re: /==(?!=)/, to: "!=" },
-  { kind: "loose-neq", re: /!=(?!=)/, to: "==" },
-  { kind: "le", re: /<=/, to: "<" },
-  { kind: "ge", re: />=/, to: ">" },
-  { kind: "lt", re: /<(?!=)/, to: "<=" },
-  { kind: "gt", re: />(?!=)/, to: ">=" },
+  { kind: "loose-eq", re: /(?<![=!])==(?!=)/, to: "!=" },
+  { kind: "loose-neq", re: /(?<![=!])!=(?!=)/, to: "==" },
+  { kind: "le", re: /(?<![<>=])<=/, to: "<" },
+  { kind: "ge", re: /(?<![<>=])>=/, to: ">" },
+  { kind: "lt", re: /(?<![<=])<(?![<=])/, to: "<=" },
+  { kind: "gt", re: /(?<![=<>])>(?![=>])/, to: ">=" },
   { kind: "and", re: /&&/, to: "||" },
   { kind: "or", re: /\|\|/, to: "&&" },
   { kind: "true", re: /\btrue\b/, to: "false" },

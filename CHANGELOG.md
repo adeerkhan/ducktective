@@ -28,14 +28,19 @@ down.
 - **Probe attempt receipts**: `probe_attempts` and `probe_artifact` record every
   neuter strategy's outcome, so the artifact rate (metric C7) is computable from
   the store instead of discarded.
+- **Blind-check receipt (E2)**: candidates carry a `blind_check` from a
+  stripped-context re-derivation; a non-confirming verdict is stored as
+  `unreplicated`, and `write_case.mjs --require-blind` refuses a confirmation with
+  no receipt. C8 measures the overturn rate in the benchmark.
 - **Benchmark scaffold** (`bench/`): source validation, content-addressed
   job identity, instance-spec validation, and the C1–C12 arithmetic, with smoke
   tests. The arm runner and corpus materialiser are **not built**.
 - **Tier-1 mutation canary** (`evals/canary.mjs`, `npm run canary`): mutates a target
   module, keeps the mutants its tests kill, and scores whether `reproduce.mjs`'s first
-  lead is the line it broke; survivors must return no candidate. First run: 88%
-  cause-hit@1, 100% no-candidate on survivors. Nightly CI (`canary.yml`), never a PR
-  gate — mutants are easier than real faults.
+  lead is the line it broke; survivors must return no candidate. 88% cause-hit@1 on
+  the fixture and 25% on this repo's own `bench/report.mjs` (crash mutants hit, value
+  mutants do not — JS seeding is traceback-only). Nightly CI (`canary.yml`), never a
+  PR gate — mutants are easier than real faults.
 - `docs/implementation.md` — the strategy and implementation plan, dissecting four
   sibling projects and proposing the receipt ladder.
 - `docs/guide.md` — a worked walkthrough.

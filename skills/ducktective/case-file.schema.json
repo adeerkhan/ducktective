@@ -49,7 +49,14 @@
           "hypothesis": { "type": "string" },
           "check": { "type": "string" },
           "verdict": {
-            "enum": ["pending", "falsified", "confirmed", "inconclusive", "inconclusive_vacuous"]
+            "enum": [
+              "pending",
+              "falsified",
+              "confirmed",
+              "inconclusive",
+              "inconclusive_vacuous",
+              "unreplicated"
+            ]
           },
           "evidence": { "type": "string" },
           "predicted": {
@@ -83,6 +90,17 @@
           "probe_artifact": {
             "description": "True when at least one neuter strategy produced a parse/undefined-name artifact rather than a comparable run. Artifacts are not evidence; this is recorded so a high artifact rate is visible.",
             "type": "boolean"
+          },
+          "blind_check": {
+            "description": "The stripped-context re-derivation (design v3 E2): a fresh check authored with only symptom, reproduction, candidate location and check — no chat history. A verdict other than \"confirmed\" demotes the claim to \"unreplicated\". The tool enforces the receipt; the host agent runs the fresh context.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["verdict"],
+            "properties": {
+              "verdict": { "enum": ["confirmed", "falsified", "inconclusive"] },
+              "check": { "type": ["string", "null"] },
+              "note": { "type": "string" }
+            }
           },
           "verified_exit_code": {
             "description": "Exit code of the re-executed check (run_check --verify).",

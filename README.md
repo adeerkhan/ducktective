@@ -41,7 +41,7 @@ repo, run a server, need an API key, or take a dependency beyond Node's standard
 Ducktective, investigate this failing test.
 ```
 
-> **Honest status — 2026-09-19 (v0.2.0).** It has confirmed real bugs in code it did not
+> **Honest status — 2026-09-20 (v0.2.0).** It has confirmed real bugs in code it did not
 > write, on the first candidate, surviving a re-run. That is a demonstration, not a rate.
 > **The discovery claim is not a selling point:** traceback order and fail-only coverage
 > reorder information the host already had. What is verified here is the _instrument_: a
@@ -260,14 +260,6 @@ claim. A README that oversold this tool would be the product's own bug, in the o
 nobody runs a test.
 
 ---
-
-## Prior art and sources
-
-The design came out of reading published agent pipelines and their measured results;
-[`docs/ref-work.md`](docs/ref-work.md) is the first critique and
-[`docs/implementation.md`](docs/implementation.md) dissects four sibling projects (AnyPoC,
-BugTraceAI-CLI, ABRT, and AI-dev-assistant) and says what to take and reject. Figures quoted
-in the docs carry a source and a check date.
 
 ## Contributing
 

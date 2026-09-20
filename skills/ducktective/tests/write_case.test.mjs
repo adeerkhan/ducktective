@@ -44,10 +44,10 @@ const caseFile = {
   notes: "",
 };
 
-function store(c, repo) {
+function store(c, repo, extra = []) {
   const file = join(repo, "case.json");
   writeFileSync(file, JSON.stringify(c), "utf8");
-  return spawnSync(process.execPath, [WRITE_CASE, "--file", file, "--repo", repo], {
+  return spawnSync(process.execPath, [WRITE_CASE, "--file", file, "--repo", repo, ...extra], {
     encoding: "utf8",
     windowsHide: true,
   });
@@ -167,6 +167,24 @@ test("a labelled non-flip is stored without being forced into a confirmed verdic
     const result = store(c, repo);
     assert.equal(result.status, 0, result.stderr);
     assert.match(readFileSync(JSON.parse(result.stdout).markdown, "utf8"), /inconclusive_vacuous/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("--require-blind refuses a confirmed case with no blind receipt", () => {
+  const repo = mkdtempSync(join(tmpdir(), "dt-cli-"));
+  try {
+    const refused = store(caseFile, repo, ["--require-blind"]);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /require-blind[\s\S]*blind_check/);
+    const withBlind = {
+      ...caseFile,
+      candidates: [{ ...caseFile.candidates[0], blind_check: { verdict: "confirmed" } }],
+    };
+    const accepted = store(withBlind, repo, ["--require-blind"]);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(JSON.parse(accepted.stdout).blind_overturn, false);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
