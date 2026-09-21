@@ -3,8 +3,7 @@
  * Install the Ducktective skill. One command, zero dependencies.
  *
  *   node skills/ducktective/bin/install.mjs --target claude
- *   node skills/ducktective/bin/install.mjs --dest /path/to/.agents/skills
- *   curl -fsSL https://raw.githubusercontent.com/adeerkhan/ducktective/main/skills/ducktective/bin/install.mjs | node - --target claude
+ *   node skills/ducktective/bin/install.mjs --dest .opencode/skills/ducktective
  *
  * It copies exactly what the host agent needs — `SKILL.md`, the case-file
  * schema, and the scripts — and nothing it doesn't: no tests, no fixtures, no

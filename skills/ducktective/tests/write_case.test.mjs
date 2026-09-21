@@ -177,19 +177,22 @@ test("a labelled non-flip is stored without being forced into a confirmed verdic
   }
 });
 
-test("a confirmed case is refused without a blind receipt, by default", () => {
+test("a control-only confirmed is storable but not reportable; a blind receipt makes it reportable", () => {
   const repo = mkdtempSync(join(tmpdir(), "dt-cli-"));
   try {
-    const bare = {
+    const controlOnly = {
       ...caseFile,
       candidates: [{ ...caseFile.candidates[0], blind_check: undefined }],
     };
-    const refused = store(bare, repo);
-    assert.equal(refused.status, 1);
-    assert.match(refused.stderr, /blind_check receipt/);
-    assert.ok(!existsSync(join(repo, ".ducktective")), "a refused case must not touch the store");
+    const stored = store(controlOnly, repo);
+    assert.equal(stored.status, 0, stored.stderr);
+    const out = JSON.parse(stored.stdout);
+    assert.equal(out.reportable, false, "a local confirmation is not merge-grade");
+    assert.match(out.not_reportable, /independent receipt/);
+
     const accepted = store(caseFile, repo);
     assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(JSON.parse(accepted.stdout).reportable, true);
     assert.equal(JSON.parse(accepted.stdout).blind_overturn, false);
   } finally {
     rmSync(repo, { recursive: true, force: true });

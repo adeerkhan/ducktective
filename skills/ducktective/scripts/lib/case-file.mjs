@@ -173,14 +173,20 @@ export function clip(s, n = 800) {
 export function renderMarkdown(c) {
   const r = c.reproduction ?? {};
   const report = caseReportability(c);
-  const confidenceStamp =
-    report.confidence > 0 || report.reportable
-      ? ` · **Cause confidence:** ${report.confidence}${report.reportable ? "" : ` _(not reportable: ${report.reason})_`}`
-      : "";
+  const stamp =
+    {
+      confirmed: "CONFIRMED",
+      does_not_reproduce: "DOES NOT REPRODUCE",
+      exhausted: "EXHAUSTED",
+      unverified: "UNVERIFIED",
+      open: "OPEN",
+    }[c.status] ?? String(c.status ?? "").toUpperCase();
   const lines = [
     `# ${c.id} — ${c.symptom.split("\n")[0].slice(0, 80) || "untitled symptom"}`,
     "",
-    `**Status:** \`${c.status}\` · **Confidence:** ${c.confidence}${confidenceStamp} · **Opened:** ${c.opened_at}`,
+    `**${stamp}** · Confidence: ${c.confidence} · Cause confidence: ${report.confidence}${
+      report.reportable ? "" : ` _(not reportable: ${report.reason})_`
+    }`,
     `**Reproduction:** \`${r.command}\` → \`${r.outcome}\` in ${Math.round(r.duration_ms ?? 0)} ms (exit ${r.exit_code ?? "?"})`,
     c.cause_hash ? `**Cause:** \`${c.cause_hash}\` (seen ${c.count ?? 1}×)` : null,
     "",
@@ -188,53 +194,55 @@ export function renderMarkdown(c) {
     "",
     c.symptom || "_none recorded_",
     "",
-    "## Reproduction evidence",
+    "## Finding",
     "",
   ];
-  if ((r.stack ?? []).length) lines.push("```", ...r.stack, "```", "");
-  if (r.stderr?.trim()) lines.push("```", clip(r.stderr, 1200), "```", "");
-  if ((r.covered ?? []).length) {
+  if (c.confirmed_cause) lines.push(`**Confirmed cause:** ${c.confirmed_cause}`, "");
+  else if (c.leading_hypothesis)
+    lines.push(`**Leading hypothesis (unverified):** ${c.leading_hypothesis}`, "");
+  else if (c.status === "does_not_reproduce")
     lines.push(
-      `Covered by the failing run only: ${r.covered.map((s) => `${s.file}:${s.line}`).join(", ")}`,
+      "**Did not reproduce.** The ticket may be stale; no code was changed or proposed.",
+      "",
+    );
+  else lines.push("_No cause was confirmed._", "");
+
+  lines.push("## Candidates", "");
+  if (!(c.candidates ?? []).length)
+    lines.push("_None — the gate stopped the investigation before localization._", "");
+  for (const cand of c.candidates ?? []) {
+    lines.push(
+      `${cand.rank ?? "–"}. \`${cand.location}\` — **${cand.verdict}**`,
+      `   - hypothesis: ${cand.hypothesis || "not stated"}`,
+      cand.check ? `   - check: \`${String(cand.check).split("\n")[0].slice(0, 120)}\`` : null,
+      (cand.probe_flipped ?? "not-run") !== "not-run" ? `   - probe: ${cand.probe_flipped}` : null,
+      `   - evidence: ${clip((cand.evidence ?? "").replace(/\s+/g, " ").trim(), 300) || "none recorded"}`,
       "",
     );
   }
-  lines.push("## Candidates", "");
-  if (!(c.candidates ?? []).length) {
-    lines.push("_None. The gate stopped the investigation before localization._", "");
-  }
-  for (const cand of c.candidates ?? []) {
-    const block = [
-      `### ${cand.rank ?? "–"}. \`${cand.location}\` — ${cand.verdict}`,
-      "",
-      cand.why ? `*Why:* ${cand.why}` : null,
-      `*Hypothesis:* ${cand.hypothesis || "not stated"}`,
-    ];
-    if (cand.check) block.push("", "```", cand.check, "```");
-    if (cand.probe || cand.probe_flipped)
-      block.push(
-        "",
-        `*Probe:* ${cand.probe ?? "not run"} → \`probe_flipped: ${cand.probe_flipped ?? "not-run"}\`${
-          Number.isInteger(cand.probe_exit_code) ? `, check exit ${cand.probe_exit_code}` : ""
-        }`,
-      );
-    if ((cand.probe_attempts ?? []).length)
-      block.push(`*Probe strategies:* ${cand.probe_attempts.join("; ")}`);
-    if (cand.evidence) block.push("", "*Evidence:*", "", "```", clip(cand.evidence, 900), "```");
-    lines.push(...block, "");
-  }
-  if ((c.why_violations ?? []).length) {
-    lines.push("### Consistency warnings (E5)", "");
-    for (const w of c.why_violations) lines.push(`- ${w}`);
-    lines.push("");
-  }
-  lines.push("## Finding", "");
-  if (c.confirmed_cause) lines.push(`**Confirmed cause:** ${c.confirmed_cause}`, "");
-  if (c.leading_hypothesis)
-    lines.push(`**Leading hypothesis (unverified):** ${c.leading_hypothesis}`, "");
-  if (c.status === "does_not_reproduce")
+  if ((c.why_violations ?? []).length)
+    lines.push(`_Consistency (E5): ${c.why_violations.join("; ")}_`, "");
+
+  if ((r.stack ?? []).length)
     lines.push(
-      "**Did not reproduce.** The ticket may be stale; no code was changed or proposed.",
+      "<details><summary>stack</summary>",
+      "",
+      "```",
+      ...r.stack.slice(0, 8),
+      "```",
+      "",
+      "</details>",
+      "",
+    );
+  if (r.stderr?.trim())
+    lines.push(
+      "<details><summary>stderr</summary>",
+      "",
+      "```",
+      clip(r.stderr, 800),
+      "```",
+      "",
+      "</details>",
       "",
     );
   if (c.suggested_patch)
@@ -242,11 +250,12 @@ export function renderMarkdown(c) {
       "## Suggested patch (secondary)",
       "",
       "```diff",
-      clip(c.suggested_patch, 2000),
+      clip(c.suggested_patch, 1500),
       "```",
       "",
     );
   if (c.notes) lines.push("## Notes", "", c.notes, "");
+  lines.push("_No patch was applied; this file is the finding._", "");
   return (
     lines
       .filter((l) => l !== null)

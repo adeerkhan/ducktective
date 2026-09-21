@@ -50,27 +50,27 @@ For the top candidate in `draft.json`:
 
 1. State a one-line hypothesis: "this function should return X under Y, but the failing run shows Z."
 2. Write the smallest check that would **disprove** it — an assertion, an existing test, or a short script. Prefer a check that distinguishes the failing path from a known-good one.
-3. Run it with a control and a blind re-derivation:
+3. Run it with a control:
 
 ```bash
 node scripts/run_check.mjs --file .ducktective/draft.json --candidate 1 \
   --predict fail \
   --cmd "<the check>" \
   --control "<known-good command that must pass>" \
-  --probe \
-  --blind "<a second, independently written check>" \
   --yes
 ```
 
-| verdict                | meaning                                                                     | next                                 |
-| ---------------------- | --------------------------------------------------------------------------- | ------------------------------------ |
-| `confirmed`            | failed as predicted, a receipt discriminated, the blind check reproduced it | **stop** — this is the cause         |
-| `falsified`            | the check held; the hypothesis is wrong                                     | next candidate                       |
-| `inconclusive_vacuous` | the check did not move when the accused line was neutered                   | it never touched that line — rewrite |
-| `inconclusive`         | timed out, could not run, or the control failed too                         | fix the check                        |
-| `unreplicated`         | the blind re-derivation did not reproduce the claim                         | rewrite the blind check, or file it  |
+| verdict                | meaning                                                              | next                                 |
+| ---------------------- | -------------------------------------------------------------------- | ------------------------------------ |
+| `confirmed`            | failed as predicted, and a `--control` passed or a `--probe` flipped | **stop** — this is the cause         |
+| `falsified`            | the check held; the hypothesis is wrong                              | next candidate                       |
+| `inconclusive_vacuous` | the check did not move when the accused line was neutered            | it never touched that line — rewrite |
+| `inconclusive`         | timed out, could not run, or the control failed too                  | fix the check                        |
+| `unreplicated`         | a `--blind` check ran and did not reproduce the claim                | rewrite the blind check, or file it  |
 
-`--probe` neuters the accused line on a scratch `git worktree` and re-runs the check there. `--blind` executes a second, independently written check and is **required** for `confirmed` — a claim filed by a single context is refused. Without `--yes` the tools print the exact commands and stop.
+`--control` names a known-good path that must pass — a check that fails everywhere distinguishes nothing. Add `--probe` (neuters the accused line on a scratch `git worktree`) and `--blind` (executes a second, independently written check) when the cause must be **reportable**, the merge-grade you would put in a review. Without `--yes` the tools print the exact commands and stop.
+
+**Two grades.** `confirmed` — the prediction held and a receipt discriminated (control or probe); act on it now. **reportable** — `confirmed` plus an _independent_ receipt (a probe flip, a confirming blind check, or a survived verify); that is the merge-grade cause.
 
 **Try one candidate hard before escalating.** An `inconclusive` lead does not unlock the next; pass `--escalate` only to move on knowingly.
 
@@ -99,7 +99,7 @@ It prints an evidence table and a letter grade. The grade measures evidence comp
 2. If it does not fail, write `status: does_not_reproduce` and **stop**. Do not "improve" the code or suggest refactors.
 3. Cap candidates at 3–5, never more. A bisected commit outranks a guessed one.
 4. For each candidate, in order: state a one-line hypothesis; write the smallest check that would disprove it; run it. Oracle holds → `falsified`, demote, next candidate. Oracle fails in the predicted way → `confirmed`, stop.
-5. A check that also fails on a known-good path is a bad check, and a check whose outcome does not move when the accused line is neutered never touched that line. `confirmed` needs a receipt — a `--control` that passed or a `--probe` that flipped — **and** a `--blind` re-derivation.
+5. A check that also fails on a known-good path is a bad check, and a check whose outcome does not move when the accused line is neutered never touched that line. `confirmed` needs a discrimination receipt — a `--control` that passed or a `--probe` that flipped. A **reportable** (merge-grade) cause also needs an independent receipt: a `--probe` flip, a confirming `--blind`, or a survived `--verify`.
 6. Never confirm a cause in prose, and never skip the check because the hypothesis "looks obvious."
 7. Do not write a production patch until a cause is `confirmed`. A suggested patch is secondary.
 8. Always emit the case file. Never free-prose as the final answer.
@@ -138,13 +138,13 @@ The full shape is `case-file.schema.json` beside this file.
 
 ## Common rationalizations
 
-| Rationalization                    | Reality                                                                           |
-| ---------------------------------- | --------------------------------------------------------------------------------- |
-| "The cause is obvious, skip it."   | Obvious causes are wrong often enough to matter. Run the check.                   |
-| "The test is wrong, not the code." | Verify that. If the test is wrong, fix the test — don't silently skip it.         |
-| "It passes locally."               | Reproduce with the same command and environment, or say `does_not_reproduce`.     |
-| "The check agreed, so confirmed."  | Agreement is not discrimination. Add `--control`/`--probe`, then the blind check. |
-| "I'll write the case later."       | The case file is the deliverable. Later is never.                                 |
+| Rationalization                    | Reality                                                                                                           |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| "The cause is obvious, skip it."   | Obvious causes are wrong often enough to matter. Run the check.                                                   |
+| "The test is wrong, not the code." | Verify that. If the test is wrong, fix the test — don't silently skip it.                                         |
+| "It passes locally."               | Reproduce with the same command and environment, or say `does_not_reproduce`.                                     |
+| "The check agreed, so confirmed."  | Agreement is not discrimination. A `--control` (or `--probe`) is required; add `--blind` for a merge-grade cause. |
+| "I'll write the case later."       | The case file is the deliverable. Later is never.                                                                 |
 
 ## Red flags
 
@@ -158,7 +158,7 @@ The full shape is `case-file.schema.json` beside this file.
 
 - [ ] `reproduce.mjs` ran the exact command and recorded the outcome
 - [ ] every candidate carried a hypothesis and an executed check
-- [ ] `confirmed` carries a discrimination receipt **and** a blind receipt
+- [ ] `confirmed` carries a discrimination receipt; a reportable cause carries an independent one too
 - [ ] `.ducktective/cases.jsonl` and the Markdown mirror were written
 
 ## Out of scope

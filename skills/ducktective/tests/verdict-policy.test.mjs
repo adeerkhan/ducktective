@@ -183,13 +183,23 @@ test("cause-confidence is arithmetic over receipts, never a self-report", () => 
   );
 });
 
-test("reportable is derived, and a non-confirmed case is never reportable", () => {
-  const confirmed = {
+test("reportable is derived, needs an independent receipt, and is never for a non-confirmed case", () => {
+  const controlOnly = {
     status: "confirmed",
     candidates: [{ verdict: "confirmed", control_exit_code: 0 }],
   };
-  assert.equal(caseReportability(confirmed).reportable, true);
-  assert.match(caseReportability({ ...confirmed, status: "unverified" }).reason, /not reportable/);
+  // A control-only confirmation is a real cause but not a merge-grade one.
+  assert.equal(caseReportability(controlOnly).reportable, false);
+  assert.match(caseReportability(controlOnly).reason, /independent receipt/);
+  const independent = {
+    status: "confirmed",
+    candidates: [{ verdict: "confirmed", control_exit_code: 0, probe_flipped: "yes" }],
+  };
+  assert.equal(caseReportability(independent).reportable, true);
+  assert.match(
+    caseReportability({ ...independent, status: "unverified" }).reason,
+    /not reportable/,
+  );
 });
 
 // --- the blind re-derivation (design v3 E2) --------------------------------
@@ -217,7 +227,7 @@ test("a blind re-derivation that disagrees refuses the confirmed claim", () => {
     ...confirmedCandidateFixture(),
     blind_check: { verdict: "falsified", check: "a second, independent check", exit_code: 0 },
   };
-  assert.match(candidateViolations(overturn).join("\n"), /requires a confirming blind_check/);
+  assert.match(candidateViolations(overturn).join("\n"), /blind re-derivation said/);
 
   const recorded = { ...overturn, verdict: "unreplicated" };
   assert.deepEqual(candidateViolations(recorded), [], "the demoted record is storable");

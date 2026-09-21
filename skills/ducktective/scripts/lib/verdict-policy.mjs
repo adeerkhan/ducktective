@@ -227,14 +227,18 @@ export function candidateViolations(cand) {
         `candidate "${loc}": "inconclusive_vacuous" requires probe_flipped "no" — say what the probe showed, or use "inconclusive"`,
       );
 
-    // The blind re-derivation (design v3 E2), default-on. run_check.mjs executes
-    // and records it, so the receipt is an executed check, not a typed verdict.
-    // The tool cannot prove the host wrote the second check without the first
-    // run's context — that is a protocol obligation, and this receipt's honest
-    // limit.
-    if (verdict === VERDICT.CONFIRMED && cand.blind_check?.verdict !== "confirmed")
+    // The blind re-derivation (design v3 E2). run_check.mjs executes and records
+    // it, so the receipt is an executed check, not a typed verdict. It is not
+    // required to file a local `confirmed` — it is the independent receipt that
+    // makes a cause *reportable* (caseReportability), the merge-grade claim. But
+    // if it ran and did not reproduce the claim, its answer is binding.
+    if (
+      verdict === VERDICT.CONFIRMED &&
+      cand.blind_check &&
+      cand.blind_check.verdict !== "confirmed"
+    )
       bad.push(
-        `candidate "${loc}": "confirmed" requires a confirming blind_check receipt — run run_check.mjs --blind "<a second, independently written check>"; a first run graded by its own author is not replication (design v3 E2)`,
+        `candidate "${loc}": the blind re-derivation said "${cand.blind_check.verdict}" — record it as "unreplicated", not "confirmed"`,
       );
     if (verdict === VERDICT.UNREPLICATED) {
       if (!cand.blind_check || !cand.blind_check.verdict)
@@ -318,6 +322,20 @@ export function caseReportability(c) {
       reportable: false,
       confidence,
       reason: `cause_confidence ${confidence} is below the floor ${floor}`,
+    };
+  // Merge-grade needs an *independent* receipt: the same run that wrote the check
+  // graded it otherwise. A control-only `confirmed` is a real cause you may act
+  // on; it is not a cause you'd stake a review on.
+  const independent =
+    cand.probe_flipped === "yes" ||
+    cand.blind_check?.verdict === "confirmed" ||
+    cand.verified_verdict === VERDICT.CONFIRMED;
+  if (!independent)
+    return {
+      reportable: false,
+      confidence,
+      reason:
+        "no independent receipt (a --probe flip, a confirming --blind, or a survived --verify) — a local confirmation, not a merge-grade cause",
     };
   return { reportable: true, confidence, reason: "" };
 }
