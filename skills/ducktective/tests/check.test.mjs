@@ -153,6 +153,8 @@ test("check composes the tools and grades the claim they can prove", (t) => {
       "fail",
       "--control",
       'node -e "process.exit(0)"',
+      "--blind",
+      "node -e \"import('./lib.mjs').then(m=>process.exit(m.total([1,2,3])===3?2:0))\"",
       "--out",
       join(repo, ".ducktective", "check.json"),
       "--yes",

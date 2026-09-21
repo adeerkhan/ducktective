@@ -28,10 +28,13 @@ down.
 - **Probe attempt receipts**: `probe_attempts` and `probe_artifact` record every
   neuter strategy's outcome, so the artifact rate (metric C7) is computable from
   the store instead of discarded.
-- **Blind-check receipt (E2)**: candidates carry a `blind_check` from a
-  stripped-context re-derivation; a non-confirming verdict is stored as
-  `unreplicated`, and `write_case.mjs --require-blind` refuses a confirmation with
-  no receipt. C8 measures the overturn rate in the benchmark.
+- **Blind-check receipt (E2)**: `run_check.mjs --blind "<cmd>"` executes a second,
+  independently written check and records it on the candidate as `blind_check`
+  (`verdict`, `check`, `exit_code`, `evidence`). A non-reproduction is stored as
+  `unreplicated`, and `write_case.mjs` refuses a `confirmed` without a confirming
+  receipt — **default-on**, because the failure it guards is silent. Honest limit:
+  the tool proves the second check ran; context separation is the host's
+  obligation (`docs/architecture.md` §6.5). C8 measures the overturn rate.
 - **Benchmark scaffold** (`bench/`): source validation, content-addressed
   job identity, instance-spec validation, and the C1–C12 arithmetic, with smoke
   tests. The arm runner and Docker/remote corpus sources are **not built**.

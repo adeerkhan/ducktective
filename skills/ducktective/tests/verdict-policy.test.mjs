@@ -65,13 +65,14 @@ const RUNS = [
     predicted: "fail",
     check: { code: 1 },
     control: { code: 0 },
-    disc: { controlPassed: true },
+    disc: { controlPassed: true, blind: { confirmed: true } },
     candidate: {
       ...BASE,
       verdict: "confirmed",
       predicted: "fail",
       check_exit_code: 1,
       control_exit_code: 0,
+      blind_check: { verdict: "confirmed", check: "a second check", exit_code: 1 },
     },
     confirmed: true,
   },
@@ -80,13 +81,14 @@ const RUNS = [
     predicted: "fail",
     check: { code: 1 },
     control: null,
-    disc: { probeFlipped: true },
+    disc: { probeFlipped: true, blind: { confirmed: true } },
     candidate: {
       ...BASE,
       verdict: "confirmed",
       predicted: "fail",
       check_exit_code: 1,
       probe_flipped: "yes",
+      blind_check: { verdict: "confirmed", check: "a second check", exit_code: 1 },
     },
     confirmed: true,
   },
@@ -203,15 +205,19 @@ const confirmedCandidateFixture = () => ({
   control_exit_code: 0,
   verdict: "confirmed",
   evidence: "AssertionError",
+  blind_check: {
+    verdict: "confirmed",
+    check: 'python -c "from app import total; assert total([1,2,3,4]) == 10"',
+    exit_code: 1,
+  },
 });
 
-test("a blind re-derivation that disagrees demotes a confirmed claim", () => {
+test("a blind re-derivation that disagrees refuses the confirmed claim", () => {
   const overturn = {
     ...confirmedCandidateFixture(),
-    blind_check: { verdict: "falsified", check: "a second, independent check" },
+    blind_check: { verdict: "falsified", check: "a second, independent check", exit_code: 0 },
   };
-  assert.match(candidateViolations(overturn).join("\n"), /blind re-derivation said/);
-  assert.match(candidateViolations(overturn).join("\n"), /"unreplicated"/);
+  assert.match(candidateViolations(overturn).join("\n"), /requires a confirming blind_check/);
 
   const recorded = { ...overturn, verdict: "unreplicated" };
   assert.deepEqual(candidateViolations(recorded), [], "the demoted record is storable");
@@ -219,7 +225,11 @@ test("a blind re-derivation that disagrees demotes a confirmed claim", () => {
 });
 
 test("unreplicated owes a non-confirming blind receipt", () => {
-  const bare = { ...confirmedCandidateFixture(), verdict: "unreplicated" };
+  const bare = {
+    ...confirmedCandidateFixture(),
+    verdict: "unreplicated",
+    blind_check: undefined,
+  };
   assert.match(candidateViolations(bare).join("\n"), /requires a blind_check receipt/);
   const contradicted = { ...bare, blind_check: { verdict: "confirmed" } };
   assert.match(candidateViolations(contradicted).join("\n"), /contradicts a confirmed blind_check/);

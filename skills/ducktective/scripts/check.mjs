@@ -43,6 +43,8 @@ const USAGE = `usage: check.mjs --claim TEXT --repro CMD [options]
   --check CMD       the falsifying check (enables the probe / prediction rows)
   --predict pass|fail  what --check must do if the claim is true
   --control CMD     known-good path that must pass, or the check is not an oracle
+  --blind CMD       a second, independently written check; required before the
+                    result can be filed as confirmed (design v3 E2)
   --repo DIR        repo under test (default: walk up to .git from here)
   --skip-bisect     do not search history (no green ancestor, or not a repo)
   --budget SEC      bisect cost ceiling (default 300)
@@ -86,6 +88,9 @@ function parseArgs(argv) {
         break;
       case "--control":
         opts.control = value;
+        break;
+      case "--blind":
+        opts.blind = value;
         break;
       case "--repo":
         opts.repo = resolve(value);
@@ -254,6 +259,7 @@ function main() {
         opts.check,
         "--probe",
         ...(opts.control ? ["--control", opts.control] : []),
+        ...(opts.blind ? ["--blind", opts.blind] : []),
         "--yes",
       ],
     ]);

@@ -42,6 +42,12 @@ function confirmed(overrides = {}) {
         control_exit_code: 0,
         verdict: "confirmed",
         evidence: "AssertionError: 6 != 10",
+        blind_check: {
+          verdict: "confirmed",
+          check: 'python -c "from app import total; assert total([1,2,3,4]) == 10"',
+          exit_code: 1,
+          evidence: "AssertionError: 6 != 10",
+        },
       },
     ],
     confirmed_cause: "end defaults to len(rows) - 1, dropping the final row",

@@ -39,6 +39,12 @@ node bench/materialize.mjs --instances corpus/ --out work/ --yes   # verify a co
 node bench/run.mjs --instances corpus/ --out work/ --yes           # both arms, scored
 ```
 
+`run.mjs` defaults to `--split dev`, so a plain run never touches the held-out third of
+the corpus; ask for it by name (`--split heldout` or `--split all`). Bound the run with
+`--concurrency N` and `--budget-tokens N` / `--budget-ms N`; an arm the budget stops is a
+`skipped-budget` row, not a silent omission. `--run-id 2026-09-21` stamps every row (it
+defaults to today). The JSON report goes to stdout, a C1–C5 table to stderr.
+
 `run.mjs` auto-detects the agent harness on `PATH` (OpenCode today) and builds the agent
 command itself — no `--agent-cmd` needed. Override it with `--agent <name>`, or use any
 other harness with `--agent-cmd "<command>"`; that command runs with cwd = the arm's
@@ -68,6 +74,27 @@ passes.
 }
 ```
 
+Optional fields, for silent bugs and real repos:
+
+| field            | meaning                                                                                                                                                         |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `oracle.command` | a host-authored check that must fail at `commit` and pass at `fixCommit`; used when the repo's own suite is green at the buggy commit. It doubles as the repro. |
+| `fixCommit`      | the known-good revision. The materialiser checks the oracle passes there and returns the checkout to the buggy commit.                                          |
+| `testPatch`      | copy the tests the fix changed into the buggy checkout, so a repo-authored test is the oracle (SWE-bench's FAIL_TO_PASS shape). Needs `commit` and `fixCommit`. |
+| `assets`         | files copied into the checkout (an oracle script, a data fixture).                                                                                              |
+| `mode`           | `"clone"` (default) or `"worktree"`. Worktree mode checks out inside the repo so the repro finds its `node_modules`, and removes the worktree afterwards.       |
+
+Mine a candidate from one fix commit, then verify it — the miner proposes, the
+materialiser disposes:
+
+```bash
+node bench/mine.mjs --repo /path/to/repo --fix <fix-sha> --out corpus/<name>.json
+node bench/materialize.mjs --instance corpus/<name>.json --yes   # keep only if ok
+```
+
+`corpus/` ships twelve verified real instances; see `corpus/README.md`. They are verified
+fail-at-bug/pass-at-fix but not vetted for answer leakage.
+
 ## Guardrails
 
 - **No measured claim before Tier 2.** If `run.mjs` ran on a toy or self-authored corpus,
@@ -75,8 +102,10 @@ passes.
 - **Arms must be separated honestly.** Arm A is bare: it must not have the `ducktective`
   skill available, or it is not a control. The prompt says "do not use a debugging skill";
   the clean setup installs the skill only for arm B.
-- **Throwaway clones only.** `--auto` auto-approves agent permissions, which is safe here
-  because every arm runs in a clone the materialiser made, never your tree.
+- **Throwaway checkouts only.** `--auto` auto-approves agent permissions, which is safe
+  here because an arm runs in a clone or a `git worktree` the materialiser made, never
+  your tree. Worktree mode creates and removes its worktrees inside the source repo (and
+  prunes the registration); the source repo must be clean enough to check out its commits.
 - **State the falsifier.** C2 near-zero movement, or C8 ≈ 0, are pre-registered reasons to
   cut a mechanism (`docs/implementation.md` §8), not failures to explain away.
 

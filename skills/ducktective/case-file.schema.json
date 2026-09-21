@@ -92,13 +92,21 @@
             "type": "boolean"
           },
           "blind_check": {
-            "description": "The stripped-context re-derivation (design v3 E2): a fresh check authored with only symptom, reproduction, candidate location and check — no chat history. A verdict other than \"confirmed\" demotes the claim to \"unreplicated\". The tool enforces the receipt; the host agent runs the fresh context.",
+            "description": "The stripped-context re-derivation (design v3 E2), executed by run_check.mjs --blind: a second check the host authors without the first run's context. exit_code is the tool-captured result of running it; a non-reproduction demotes the claim to \"unreplicated\". Required for every confirmed claim. Honest limit: the tool runs and records the receipt; it cannot prove the second check was authored without context.",
             "type": "object",
             "additionalProperties": false,
-            "required": ["verdict"],
+            "required": ["verdict", "check", "exit_code"],
             "properties": {
               "verdict": { "enum": ["confirmed", "falsified", "inconclusive"] },
-              "check": { "type": ["string", "null"] },
+              "check": {
+                "type": "string",
+                "description": "The second, independently written command that was executed."
+              },
+              "exit_code": {
+                "type": ["number", "null"],
+                "description": "Exit code run_check captured for that command."
+              },
+              "evidence": { "type": "string" },
               "note": { "type": "string" }
             }
           },

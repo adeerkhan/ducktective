@@ -38,7 +38,7 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { CASE_ID, clip, repoRoot, SCHEMA, validateSchema, writeAtomic } from "./lib/case-file.mjs";
 import { run, wasNotRunnable } from "./lib/exec.mjs";
-import { classifyVerdict } from "./lib/verdict-policy.mjs";
+import { classifyVerdict, predictionHeld } from "./lib/verdict-policy.mjs";
 
 const USAGE = `usage: run_check.mjs --file DRAFT.json --candidate RANK|LOCATION --predict pass|fail [options]
   --yes                execute the check (default: dry run, prints it and exits 3)
@@ -51,6 +51,10 @@ const USAGE = `usage: run_check.mjs --file DRAFT.json --candidate RANK|LOCATION 
   --probe              neuter the accused line on a scratch worktree and re-run the
                        check; if the outcome does not change the check never
                        depended on that line (inconclusive_vacuous)
+  --blind COMMAND      a second check, written without this run's context; run_check
+                       executes and records it, and a non-reproduction demotes the
+                       verdict to "unreplicated" (required before a case can be
+                       filed as confirmed)
   --cwd DIR            where to run (default: the draft's directory)
   --timeout MS         kill the whole tree after this long (default: 60000)
   --max-bytes N        evidence budget per stream (default: 4000)
@@ -135,6 +139,9 @@ function parseArgs(argv) {
         break;
       case "--control":
         opts.control = value;
+        break;
+      case "--blind":
+        opts.blind = value;
         break;
       case "--depth":
         // 1 = one candidate, never escalate. The range goes in the message because
@@ -564,6 +571,10 @@ async function main() {
   const check = opts.cmd ?? checkSource(cand.check);
   if (!(check ?? "").trim())
     return refuse('no check to run — give it one with --cmd or set the candidate\'s "check" field');
+  if (opts.blind !== undefined && opts.blind.trim() === check.trim())
+    return refuse(
+      "the --blind check is identical to the check it is meant to replicate — author a second, independent check",
+    );
 
   // The repo the case belongs to, and where the command runs. A materialized
   // script needs this root to import from, so `--repo` is separate from `--cwd`.
@@ -588,6 +599,7 @@ async function main() {
   console.error(`  check:   ${prepared.command}`);
   if (prepared.file) console.error(`  source:\n${check}`);
   if (opts.control) console.error(`  control: ${opts.control}`);
+  if (opts.blind) console.error(`  blind:   ${opts.blind}`);
   if (opts.probe)
     console.error(
       `  probe:   ${cand.location} neutered on a scratch worktree at HEAD, then this check re-run there`,
@@ -609,6 +621,23 @@ async function main() {
     ? await run(opts.control, { cwd, timeout: opts.timeout, maxBytes: opts.maxBytes })
     : null;
 
+  // The blind re-derivation (design v3 E2), executed here: a second check the
+  // host authors without this run's context. run_check only runs and records it;
+  // it cannot prove the authoring was context-free, and says so (see §6.5).
+  const predicted = opts.predict ?? cand.predicted;
+  const blindResult = opts.blind
+    ? await run(opts.blind, { cwd, timeout: opts.timeout, maxBytes: opts.maxBytes })
+    : null;
+  const blindConfirmed =
+    !!blindResult &&
+    Number.isInteger(blindResult.code) &&
+    predictionHeld(predicted, blindResult.code);
+  const blindReceipt = blindResult
+    ? { confirmed: blindConfirmed, ran: Number.isInteger(blindResult.code) }
+    : opts.verify && cand.blind_check
+      ? { confirmed: cand.blind_check.verdict === "confirmed" }
+      : null;
+
   // Receipts. On --verify no fresh control is run, so the one recorded on the
   // first run carries the claim; on a first run nothing is recorded yet. When
   // --probe was asked for, the prediction is graded provisionally first: the
@@ -619,6 +648,7 @@ async function main() {
     controlPassed: controlResult ? controlResult.code === 0 : recordedControl,
     // Provisional only: an explicitly requested probe replaces this before recording.
     probeFlipped: opts.probe ? true : opts.verify && cand.probe_flipped === "yes" ? true : null,
+    blind: blindReceipt,
   };
   let { verdict, notes } = classify(
     opts.predict ?? cand.predicted,
@@ -749,6 +779,20 @@ async function main() {
             : {}),
         }
       : {}),
+    ...(blindResult
+      ? {
+          blind_check: {
+            verdict: !Number.isInteger(blindResult.code)
+              ? "inconclusive"
+              : blindConfirmed
+                ? "confirmed"
+                : "falsified",
+            check: opts.blind,
+            exit_code: Number.isInteger(blindResult.code) ? blindResult.code : null,
+            evidence: evidenceBlock("blind", blindResult, opts.maxBytes),
+          },
+        }
+      : {}),
   });
 
   writeAtomic(draftPath, JSON.stringify(draft, null, 2) + "\n");
@@ -779,13 +823,21 @@ async function main() {
             }
           : {}),
         control_exit_code: controlResult?.code ?? null,
+        ...(blindResult
+          ? {
+              blind_verdict: blindConfirmed ? "confirmed" : "falsified",
+              blind_exit_code: Number.isInteger(blindResult.code) ? blindResult.code : null,
+            }
+          : {}),
         draft: draftPath,
         next:
           verdict === "confirmed"
             ? "set confirmed_cause + status, then: node scripts/write_case.mjs --file " + opts.file
-            : remaining
-              ? `${remaining} candidate(s) left — the policy is one hard before escalating, so finish this one's follow-ups first`
-              : "every candidate exhausted — set status unverified + leading_hypothesis, then write_case",
+            : verdict === "unreplicated"
+              ? "the blind re-derivation did not reproduce the claim — author a sharper second check, or file it unreplicated with a leading_hypothesis"
+              : remaining
+                ? `${remaining} candidate(s) left — the policy is one hard before escalating, so finish this one's follow-ups first`
+                : "every candidate exhausted — set status unverified + leading_hypothesis, then write_case",
       },
       null,
       2,

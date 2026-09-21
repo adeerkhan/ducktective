@@ -36,6 +36,11 @@ const caseFile = {
       control_exit_code: 0,
       verdict: "confirmed",
       evidence: "IndexError: list index out of range",
+      blind_check: {
+        verdict: "confirmed",
+        check: 'python -c "from app import total; total([1,2,3,4])"',
+        exit_code: 1,
+      },
     },
   ],
   confirmed_cause: "end + 1 is one past the last index",
@@ -172,17 +177,18 @@ test("a labelled non-flip is stored without being forced into a confirmed verdic
   }
 });
 
-test("--require-blind refuses a confirmed case with no blind receipt", () => {
+test("a confirmed case is refused without a blind receipt, by default", () => {
   const repo = mkdtempSync(join(tmpdir(), "dt-cli-"));
   try {
-    const refused = store(caseFile, repo, ["--require-blind"]);
-    assert.equal(refused.status, 1);
-    assert.match(refused.stderr, /require-blind[\s\S]*blind_check/);
-    const withBlind = {
+    const bare = {
       ...caseFile,
-      candidates: [{ ...caseFile.candidates[0], blind_check: { verdict: "confirmed" } }],
+      candidates: [{ ...caseFile.candidates[0], blind_check: undefined }],
     };
-    const accepted = store(withBlind, repo, ["--require-blind"]);
+    const refused = store(bare, repo);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /blind_check receipt/);
+    assert.ok(!existsSync(join(repo, ".ducktective")), "a refused case must not touch the store");
+    const accepted = store(caseFile, repo);
     assert.equal(accepted.status, 0, accepted.stderr);
     assert.equal(JSON.parse(accepted.stdout).blind_overturn, false);
   } finally {

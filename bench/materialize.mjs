@@ -21,6 +21,7 @@
  */
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -30,7 +31,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { childEnv } from "../skills/ducktective/scripts/lib/exec.mjs";
 import { validateInstance } from "./sources.mjs";
@@ -103,29 +104,61 @@ export function materialize(instance, { dest, timeout = 120_000 } = {}) {
   if (!existsSync(join(repo, ".git")))
     return { id, ok: false, problems: [`not a git repository: ${repo}`] };
 
-  mkdirSync(dirname(dest), { recursive: true });
-  const clone = spawnSync("git", ["clone", "--quiet", "--no-hardlinks", "--", repo, dest], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  if (clone.status !== 0)
-    return {
-      id,
-      ok: false,
-      problems: [`clone failed: ${(clone.stderr || "").trim().slice(0, 200)}`],
-    };
-
-  if (instance.commit) {
-    const co = git(["checkout", "--quiet", "--detach", instance.commit], dest);
-    if (co.code !== 0)
+  // `clone` isolates the checkout but loses installed dependencies; `worktree`
+  // keeps them (the checkout sits inside the repo, so `node_modules` resolves)
+  // and is the mode for a repo whose repro needs its own toolchain.
+  const mode = instance.mode === "worktree" ? "worktree" : "clone";
+  if (mode === "worktree") {
+    const added = addWorktree(repo, instance.commit, dest);
+    if (!added.ok) return { id, ok: false, problems: [added.problem] };
+  } else {
+    mkdirSync(dirname(dest), { recursive: true });
+    const clone = spawnSync("git", ["clone", "--quiet", "--no-hardlinks", "--", repo, dest], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (clone.status !== 0)
       return {
         id,
         ok: false,
-        problems: [`checkout ${instance.commit} failed: ${co.err.slice(0, 200)}`],
-        dir: dest,
+        problems: [`clone failed: ${(clone.stderr || "").trim().slice(0, 200)}`],
       };
+    if (instance.commit) {
+      const co = git(["checkout", "--quiet", "--detach", instance.commit], dest);
+      if (co.code !== 0)
+        return {
+          id,
+          ok: false,
+          problems: [`checkout ${instance.commit} failed: ${co.err.slice(0, 200)}`],
+          dir: dest,
+        };
+    }
   }
   const head = git(["rev-parse", "HEAD"], dest).out;
+
+  // Instance assets (an oracle script, a data fixture) are copied into the
+  // checkout so the oracle can name them by basename.
+  for (const asset of instance.assets ?? []) {
+    const from = resolve(asset);
+    if (!existsSync(from))
+      return { id, ok: false, problems: [`asset not found: ${asset}`], dir: dest, head };
+    cpSync(from, join(dest, basename(from)), { recursive: true });
+  }
+
+  // `testPatch` copies the tests the fix commit changed into the buggy
+  // checkout, so a repo-authored test becomes a FAIL_TO_PASS oracle.
+  let testPatchFiles = [];
+  if (instance.testPatch) {
+    testPatchFiles = copyTestPatch(instance, dest, repo);
+    if (!testPatchFiles.length)
+      return {
+        id,
+        ok: false,
+        problems: ["testPatch found no changed test files between commit and fixCommit"],
+        dir: dest,
+        head,
+      };
+  }
 
   const hunkProblems = [];
   for (const hunk of instance.expect.goldHunks) {
@@ -142,7 +175,8 @@ export function materialize(instance, { dest, timeout = 120_000 } = {}) {
   }
   if (hunkProblems.length) return { id, ok: false, problems: hunkProblems, dir: dest, head };
 
-  const repro = runCommand(instance.repro.command, dest, timeout);
+  const reproCommand = instance.repro?.command ?? instance.oracle?.command;
+  const repro = runCommand(reproCommand, dest, timeout);
   if (repro.code === 0)
     return {
       id,
@@ -161,7 +195,169 @@ export function materialize(instance, { dest, timeout = 120_000 } = {}) {
       head,
       repro_exit: null,
     };
-  return { id, ok: true, problems: [], dir: dest, head, repro_exit: repro.code };
+
+  // An instance-supplied oracle must fail at the buggy commit, and — when a
+  // fix commit is named — pass there. That is the receipt that the bug is real
+  // and the oracle is a fix oracle, not an always-fail command.
+  let oracleAtCommit = null;
+  let oracleAtFix = null;
+  let oracleVerified = false;
+  if (instance.oracle?.command) {
+    oracleAtCommit =
+      instance.oracle.command === reproCommand
+        ? repro.code
+        : runCommand(instance.oracle.command, dest, timeout).code;
+    if (oracleAtCommit === 0)
+      return {
+        id,
+        ok: false,
+        problems: ["the oracle passes at the buggy commit — it does not demonstrate the bug"],
+        dir: dest,
+        head,
+        repro_exit: repro.code,
+        oracle_at_commit: oracleAtCommit,
+      };
+    if (instance.fixCommit) {
+      // Copied test files exist (committed) at the fix revision, so an untracked
+      // copy would obstruct the checkout; remove, check out, then re-copy for
+      // the arms.
+      for (const file of testPatchFiles) rmSync(join(dest, file), { force: true });
+      const co = git(["checkout", "--quiet", "--detach", instance.fixCommit], dest);
+      if (co.code !== 0)
+        return {
+          id,
+          ok: false,
+          problems: [`checkout fixCommit ${instance.fixCommit} failed: ${co.err.slice(0, 200)}`],
+          dir: dest,
+          head,
+        };
+      oracleAtFix = runCommand(instance.oracle.command, dest, timeout).code;
+      // The arms run against the buggy revision, so restore it.
+      git(["checkout", "--quiet", "--detach", head], dest);
+      if (testPatchFiles.length) copyTestPatch(instance, dest, repo);
+      if (oracleAtFix !== 0)
+        return {
+          id,
+          ok: false,
+          problems: [`the oracle still fails at the fix commit (exit ${oracleAtFix})`],
+          dir: dest,
+          head,
+          repro_exit: repro.code,
+          oracle_at_commit: oracleAtCommit,
+          oracle_at_fix: oracleAtFix,
+        };
+      oracleVerified = true;
+    }
+  }
+
+  return {
+    id,
+    ok: true,
+    problems: [],
+    dir: dest,
+    head,
+    repro_exit: repro.code,
+    ...(instance.oracle?.command
+      ? { oracle_at_commit: oracleAtCommit, oracle_at_fix: oracleAtFix }
+      : {}),
+    ...(testPatchFiles.length ? { test_patch: testPatchFiles } : {}),
+    oracle_verified: oracleVerified,
+  };
+}
+
+/** Test files changed in a commit, by the shape of their name. */
+const TEST_FILE = /(^|\/)(?:test_.*\.py|.*_test\.py|.*\.(?:test|spec)\.[cm]?[jt]sx?)$/i;
+
+/** Copy the test files a fix commit changed into the buggy checkout. */
+function copyTestPatch(instance, dest, repo) {
+  const diff = spawnSync("git", ["diff", "--name-only", instance.commit, instance.fixCommit], {
+    cwd: repo,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (diff.status !== 0) return [];
+  const files = (diff.stdout ?? "").split(/\r?\n/).filter((f) => f && TEST_FILE.test(f));
+  const copied = [];
+  for (const file of files) {
+    const blob = spawnSync("git", ["show", `${instance.fixCommit}:${file}`], {
+      cwd: repo,
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (blob.status !== 0) continue;
+    const to = join(dest, file);
+    mkdirSync(dirname(to), { recursive: true });
+    writeFileSync(to, blob.stdout ?? "");
+    copied.push(file);
+  }
+  return copied;
+}
+
+/** Create a detached worktree of `repo` at `commit` (or HEAD) at `dest`. Never throws. */
+export function addWorktree(repo, commit, dest) {
+  try {
+    // A crashed run can leave a stale registration or directory behind; clear it
+    // first so a re-run never fails on "already registered worktree". Every step
+    // is tolerant: on Windows an editor's watcher can hold a handle inside the
+    // old worktree, and a half-clear must still end in a clear problem, not a crash.
+    spawnSync("git", ["worktree", "remove", "--force", "--quiet", dest], {
+      cwd: repo,
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    try {
+      rmSync(dest, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch {
+      /* locked; the add below will say if the path is still unusable */
+    }
+    spawnSync("git", ["worktree", "prune"], { cwd: repo, encoding: "utf8", windowsHide: true });
+    mkdirSync(dirname(dest), { recursive: true });
+    const add = spawnSync(
+      "git",
+      ["worktree", "add", "--detach", "--quiet", dest, commit ?? "HEAD"],
+      {
+        cwd: repo,
+        encoding: "utf8",
+        windowsHide: true,
+      },
+    );
+    return add.status === 0
+      ? { ok: true }
+      : {
+          ok: false,
+          problem: `git worktree add failed: ${(add.stderr || "").trim().slice(0, 200)}`,
+        };
+  } catch (err) {
+    return {
+      ok: false,
+      problem: `git worktree add failed: ${String(err?.message ?? err).slice(0, 200)}`,
+    };
+  }
+}
+
+/** Remove a worktree `addWorktree` made, tolerating locked files on Windows. */
+export function removeWorktree(repo, dest) {
+  const rm = () => {
+    try {
+      // Windows can hold a handle to a just-exited process's cwd for a moment.
+      rmSync(dest, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    } catch {
+      /* locked; the second attempt after unregistering often succeeds */
+    }
+  };
+  spawnSync("git", ["worktree", "remove", "--force", "--quiet", dest], {
+    cwd: repo,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  rm();
+  spawnSync("git", ["worktree", "prune"], { cwd: repo, encoding: "utf8", windowsHide: true });
+  spawnSync("git", ["worktree", "prune", "--expire", "now"], {
+    cwd: repo,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  rm();
 }
 
 function parseArgs(argv) {
@@ -219,9 +415,16 @@ function main() {
 
   const temp = !opts.out;
   const root = opts.out ?? mkdtempSync(join(tmpdir(), "dt-bench-"));
-  const reports = list.map((inst) =>
-    materialize(inst, { dest: join(root, inst.id), timeout: opts.timeout }),
-  );
+  const reports = list.map((inst) => {
+    // Worktree mode must sit inside the repo so the repro keeps node_modules.
+    const dest =
+      inst.mode === "worktree"
+        ? join(resolve(inst.repo), ".dt-worktrees", inst.id)
+        : join(root, inst.id);
+    const report = materialize(inst, { dest, timeout: opts.timeout });
+    if (inst.mode === "worktree") removeWorktree(resolve(inst.repo), dest);
+    return report;
+  });
   // The ledger lives outside `root` when the root is a temp dir that gets
   // deleted, or the path we print is already gone.
   const ledger = opts.out ? join(root, "materialize.jsonl") : join(WORK, "materialize.jsonl");

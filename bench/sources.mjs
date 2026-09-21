@@ -67,6 +67,8 @@ export function jobId(sourceName, inputs = {}) {
   return `${sourceName}-${digest}`;
 }
 
+const text = (v) => typeof v === "string" && v.trim().length > 0;
+
 /**
  * An instance spec is the narrow task definition from design §4: the buggy
  * checkout, the failing command, and the gold hunks. Not a patch, and not a
@@ -77,10 +79,32 @@ export function validateInstance(instance) {
   const need = (key) => {
     if (instance?.[key] === undefined || instance[key] === "") bad.push(`missing "${key}"`);
   };
-  for (const key of ["id", "source", "repo", "repro"]) need(key);
+  for (const key of ["id", "source", "repo", "expect"]) need(key);
   if (instance?.source && !SOURCES[instance.source])
     bad.push(`unknown source "${instance.source}"`);
-  if (instance?.repro && !instance.repro.command) bad.push('repro needs a "command"');
+
+  // A reproduction is the repo's own failing command, or an instance-supplied
+  // oracle when the bug is silent and no test fails at the buggy commit. At
+  // least one must be present; the oracle doubles as the reproduction.
+  const repro = instance?.repro?.command;
+  const oracle = instance?.oracle?.command;
+  if (!text(repro) && !text(oracle)) bad.push('needs a "repro.command" or an "oracle.command"');
+  if (instance?.repro !== undefined && !text(repro)) bad.push('repro needs a "command"');
+  if (instance?.oracle !== undefined && !text(oracle)) bad.push('oracle needs a "command"');
+  if (instance?.mode !== undefined && !["clone", "worktree"].includes(instance.mode))
+    bad.push('mode must be "clone" or "worktree"');
+  if (
+    instance?.assets !== undefined &&
+    (!Array.isArray(instance.assets) || instance.assets.some((a) => !text(a)))
+  )
+    bad.push("assets must be an array of file paths");
+  if (instance?.split !== undefined && !["dev", "heldout"].includes(instance.split))
+    bad.push('split must be "dev" or "heldout"');
+  if (instance?.testPatch) {
+    if (!instance.commit) bad.push("testPatch needs a commit (the buggy revision to diff from)");
+    if (!instance.fixCommit) bad.push("testPatch needs a fixCommit to copy changed tests from");
+  }
+
   const gold = instance?.expect?.goldHunks;
   if (!Array.isArray(gold) || gold.length === 0)
     bad.push("expect.goldHunks must be a non-empty array of {file,start,end}");

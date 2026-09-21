@@ -643,6 +643,8 @@ test("--verify re-executes the recorded oracle and says whether the claim surviv
       "fail",
       "--cmd",
       'node -e "process.exit(1)"',
+      "--blind",
+      'node -e "process.exit(2)"',
       "--yes",
     ],
     d.repo,
@@ -1127,4 +1129,94 @@ test("a passing prediction with no control and no probe confirms nothing", (t) =
   assert.equal(code, 2, stderr);
   assert.equal(out.verdict, "inconclusive");
   assert.match(d.read().candidates[0].evidence, /--control or --probe|flipped probe/);
+});
+
+// --- --blind: the stripped-context re-derivation, executed (design v3 E2) ----
+
+test("--blind executes a second check and records it as the receipt", (t) => {
+  const d = withDraft(t);
+  const { code, out, stderr } = tool(
+    [
+      "--file",
+      d.file,
+      "--candidate",
+      "1",
+      "--predict",
+      "fail",
+      "--cmd",
+      'node -e "process.exit(1)"',
+      "--blind",
+      'node -e "process.exit(3)"',
+      "--yes",
+    ],
+    d.repo,
+  );
+  assert.equal(code, 0, stderr);
+  assert.equal(out.verdict, "confirmed");
+  assert.equal(out.blind_verdict, "confirmed");
+  const cand = decided(d.read(), 1);
+  assert.equal(cand.blind_check.verdict, "confirmed");
+  assert.equal(cand.blind_check.exit_code, 3, "the tool captured the exit code, not the host");
+  assert.match(String(cand.blind_check.evidence), /blind/);
+  assert.deepEqual(
+    [
+      ...validateSchema(d.read(), SCHEMA),
+      ...policyViolations({
+        ...d.read(),
+        status: "confirmed",
+        confirmed_cause: "x",
+        confidence: "high",
+      }),
+    ],
+    [],
+  );
+});
+
+test("a blind check that does not reproduce the claim is unreplicated, not confirmed", (t) => {
+  const d = withDraft(t);
+  const { out } = tool(
+    [
+      "--file",
+      d.file,
+      "--candidate",
+      "1",
+      "--predict",
+      "fail",
+      "--cmd",
+      'node -e "process.exit(1)"',
+      "--blind",
+      'node -e "process.exit(0)"',
+      "--yes",
+    ],
+    d.repo,
+  );
+  assert.equal(out.verdict, "unreplicated");
+  assert.equal(out.blind_verdict, "falsified");
+  const cand = decided(d.read(), 1);
+  assert.equal(cand.verdict, "unreplicated");
+  assert.equal(cand.blind_check.exit_code, 0);
+  assert.match(cand.evidence, /blind re-derivation did not reproduce/);
+});
+
+test("--blind refuses a second check identical to the one it mirrors", (t) => {
+  const d = withDraft(t);
+  const same = 'node -e "process.exit(1)"';
+  const { code, stderr } = tool(
+    [
+      "--file",
+      d.file,
+      "--candidate",
+      "1",
+      "--predict",
+      "fail",
+      "--cmd",
+      same,
+      "--blind",
+      same,
+      "--yes",
+    ],
+    d.repo,
+  );
+  assert.equal(code, 1);
+  assert.match(stderr, /independent check/);
 });

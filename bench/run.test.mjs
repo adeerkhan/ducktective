@@ -5,11 +5,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { causeHit, scoreClaim } from "./run.mjs";
+import { causeHit, formatTable, makeBudget, pool, scoreClaim } from "./run.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUN = join(HERE, "run.mjs");
@@ -149,4 +149,159 @@ test("an arm that writes no claim is recorded as an abstention", (t) => {
   assert.equal(row.status, "no-claim");
   assert.equal(row.abstained, true);
   assert.equal(report.metrics.arm_A.C3_abstention.pct, 100);
+});
+
+test("pool bounds in-flight work and keeps input order", async () => {
+  let active = 0;
+  let peak = 0;
+  const out = await pool([1, 2, 3, 4, 5], 2, async (n) => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((r) => setTimeout(r, 10));
+    active--;
+    return [n * 2];
+  });
+  assert.equal(peak, 2, "never more than the limit in flight");
+  assert.deepEqual(out, [[2], [4], [6], [8], [10]], "results keep input order");
+});
+
+test("makeBudget exhausts on tokens and on wall clock, or not at all", () => {
+  const byTokens = makeBudget({ maxTokens: 5 });
+  assert.equal(byTokens.exhausted(), false);
+  byTokens.tokens = 5;
+  assert.equal(byTokens.exhausted(), true);
+  assert.equal(makeBudget({ maxMs: 0 }).exhausted(), true);
+  assert.equal(makeBudget().exhausted(), false, "no budget means no cap");
+});
+
+test("formatTable prints one row per arm, and 'no data' not 0%", () => {
+  const metrics = {
+    arm_A: {
+      rows: 2,
+      C1_cause_hit: { pct: 50 },
+      C2_false_confirm: { pct: 50 },
+      C3_abstention: { pct: null },
+      C4_tokens: { mean: 10 },
+      C5_wall_ms: { mean: 5 },
+    },
+  };
+  const table = formatTable(metrics, ["A"]);
+  assert.match(table, /arm\trows/);
+  assert.match(table, /A\t2\t50%\t50%\tno data\t10\t5/);
+});
+
+test("--split selects one split, and rows carry the run identity", (t) => {
+  const { repo, sha } = buggyRepo(t);
+  const dir = mkdtempSync(join(tmpdir(), "dt-run-split-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const corpus = join(dir, "corpus");
+  mkdirSync(corpus, { recursive: true });
+  const base = { ...INSTANCE, repo, commit: sha };
+  writeFileSync(join(corpus, "dev.json"), JSON.stringify({ ...base, id: "dev-1", split: "dev" }));
+  writeFileSync(
+    join(corpus, "held.json"),
+    JSON.stringify({ ...base, id: "held-1", split: "heldout" }),
+  );
+  const out = join(dir, "out");
+  const real = spawnSync(
+    process.execPath,
+    [
+      RUN,
+      "--instances",
+      corpus,
+      "--agent",
+      "stub",
+      "--arm",
+      "A",
+      "--split",
+      "dev",
+      "--out",
+      out,
+      "--yes",
+    ],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      env: { ...process.env, DT_STUB_CLAIM_A: "calc.mjs:2" },
+      timeout: 120_000,
+    },
+  );
+  assert.equal(real.status, 0, real.stderr);
+  const report = JSON.parse(real.stdout);
+  const rows = readFileSync(report.ledger, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert.deepEqual(
+    rows.map((r) => r.instance),
+    ["dev-1"],
+    "the held-out instance is untouched",
+  );
+  assert.equal(rows[0].split, "dev");
+  assert.equal(rows[0].run, new Date().toISOString().slice(0, 10));
+});
+
+test("a token budget stops starting the next arm", (t) => {
+  const { repo, sha } = buggyRepo(t);
+  const dir = mkdtempSync(join(tmpdir(), "dt-run-budget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "instance.json");
+  writeFileSync(file, JSON.stringify({ ...INSTANCE, repo, commit: sha }));
+  const out = join(dir, "out");
+  const real = spawnSync(
+    process.execPath,
+    [RUN, "--instance", file, "--agent", "stub", "--out", out, "--budget-tokens", "1", "--yes"],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      env: {
+        ...process.env,
+        DT_STUB_CLAIM_A: "calc.mjs:2",
+        DT_STUB_CLAIM_B: "calc.mjs:2",
+        DT_STUB_TOKENS: "10",
+      },
+      timeout: 120_000,
+    },
+  );
+  assert.equal(real.status, 0, real.stderr);
+  const report = JSON.parse(real.stdout);
+  const rows = readFileSync(report.ledger, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  assert.equal(rows.find((r) => r.arm === "A").status, "ok");
+  assert.equal(rows.find((r) => r.arm === "B").status, "skipped-budget");
+  assert.equal(report.budget.skipped_rows, 1);
+});
+
+test("a non-zero agent exit with no claim is a harness error, not an abstention", (t) => {
+  const { repo, sha } = buggyRepo(t);
+  const dir = mkdtempSync(join(tmpdir(), "dt-run-exit-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "instance.json");
+  writeFileSync(file, JSON.stringify({ ...INSTANCE, repo, commit: sha }));
+  const out = join(dir, "out");
+  const real = spawnSync(
+    process.execPath,
+    [
+      RUN,
+      "--instance",
+      file,
+      "--agent-cmd",
+      "node -e \"console.error('boom'); process.exit(3)\"",
+      "--arm",
+      "A",
+      "--out",
+      out,
+      "--yes",
+    ],
+    { encoding: "utf8", windowsHide: true, env: { ...process.env }, timeout: 120_000 },
+  );
+  assert.equal(real.status, 1, real.stderr);
+  const report = JSON.parse(real.stdout);
+  const row = JSON.parse(readFileSync(report.ledger, "utf8").trim());
+  assert.equal(row.status, "agent-error");
+  assert.equal(row.abstained, false);
+  assert.equal(row.agent_exit, 3);
+  assert.match(row.agent_log, /boom/);
 });

@@ -68,6 +68,21 @@ test("an instance spec must name a repro and a gold hunk", () => {
     );
 });
 
+test("an instance with only an oracle is valid; neither is not", () => {
+  const oracleOnly = { ...INSTANCE, oracle: { command: "node dt-oracle.mjs" } };
+  delete oracleOnly.repro;
+  assert.deepEqual(validateInstance(oracleOnly), []);
+  const neither = { ...INSTANCE };
+  delete neither.repro;
+  assert.match(
+    validateInstance(neither).join("\n"),
+    /needs a "repro.command" or an "oracle.command"/,
+  );
+  assert.match(validateInstance({ ...INSTANCE, mode: "docker" }).join("\n"), /mode must be/);
+  assert.match(validateInstance({ ...INSTANCE, assets: "x" }).join("\n"), /assets must be/);
+  assert.match(validateInstance({ ...INSTANCE, split: "test" }).join("\n"), /split must be/);
+});
+
 test("rate says 'no data' on an empty denominator, never 0%", () => {
   assert.deepEqual(rate(0, 0), { num: 0, den: 0, pct: null });
   assert.equal(rate(1, 4).pct, 25);

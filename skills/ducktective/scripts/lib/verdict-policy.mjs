@@ -87,7 +87,7 @@ export function expectedVerdict(predicted, exitCode) {
  * `run_check.mjs classify()`, so a caller that imported it keeps working.
  */
 export function classifyVerdict(predicted, checkResult, controlResult, timeout = 0, disc = {}) {
-  const { controlPassed = false, probeFlipped = null } = disc;
+  const { controlPassed = false, probeFlipped = null, blind = null } = disc;
   const notes = [];
   const inconclusive = (why) => {
     notes.push(why);
@@ -127,6 +127,22 @@ export function classifyVerdict(predicted, checkResult, controlResult, timeout =
     notes.push(
       "the flip detects sensitivity under this mutation, not proof the accused line is faulty",
     );
+  // The blind re-derivation (design v3 E2), executed and default-on: a second,
+  // independently authored check. If it did not reproduce the claim, the first
+  // run was graded by its own author and is not a replicated cause.
+  if (blind && blind.confirmed === false) {
+    if (blind.ran === false)
+      return inconclusive("the blind re-derivation could not be run — no replication evidence");
+    return {
+      verdict: VERDICT.UNREPLICATED,
+      notes: [
+        ...notes,
+        "the blind re-derivation did not reproduce the claim — unreplicated, not confirmed",
+      ],
+    };
+  }
+  if (blind && blind.confirmed === true)
+    notes.push("a stripped-context re-derivation reproduced the claim");
   return { verdict: VERDICT.CONFIRMED, notes };
 }
 
@@ -211,16 +227,14 @@ export function candidateViolations(cand) {
         `candidate "${loc}": "inconclusive_vacuous" requires probe_flipped "no" — say what the probe showed, or use "inconclusive"`,
       );
 
-    // The blind re-derivation (design v3 E2): a fresh-context check that did not
-    // confirm the claim demotes it. The tool cannot run the model, so it enforces
-    // the receipt the host produces.
-    if (
-      verdict === VERDICT.CONFIRMED &&
-      cand.blind_check &&
-      cand.blind_check.verdict !== "confirmed"
-    )
+    // The blind re-derivation (design v3 E2), default-on. run_check.mjs executes
+    // and records it, so the receipt is an executed check, not a typed verdict.
+    // The tool cannot prove the host wrote the second check without the first
+    // run's context — that is a protocol obligation, and this receipt's honest
+    // limit.
+    if (verdict === VERDICT.CONFIRMED && cand.blind_check?.verdict !== "confirmed")
       bad.push(
-        `candidate "${loc}": the blind re-derivation said "${cand.blind_check.verdict}" — record it as "unreplicated", not "confirmed"`,
+        `candidate "${loc}": "confirmed" requires a confirming blind_check receipt — run run_check.mjs --blind "<a second, independently written check>"; a first run graded by its own author is not replication (design v3 E2)`,
       );
     if (verdict === VERDICT.UNREPLICATED) {
       if (!cand.blind_check || !cand.blind_check.verdict)

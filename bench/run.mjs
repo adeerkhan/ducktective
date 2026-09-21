@@ -25,7 +25,7 @@
  * cause that misses every gold hunk is a false confirm. Exit 0 when the run
  * completed; 1 on invalid input; 2 on a harness error; 3 on a dry run.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
@@ -38,7 +38,13 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkInstances, loadInstances, materialize } from "./materialize.mjs";
+import {
+  addWorktree,
+  checkInstances,
+  loadInstances,
+  materialize,
+  removeWorktree,
+} from "./materialize.mjs";
 import { computeMetrics } from "./report.mjs";
 import { HARNESSES, agentCommand, detectHarness } from "./agents.mjs";
 import { childEnv } from "../skills/ducktective/scripts/lib/exec.mjs";
@@ -55,6 +61,12 @@ export const USAGE = `usage: run.mjs (--instance FILE | --instances DIR) [--agen
   --agent-cmd CMD   escape hatch for any other harness; runs with cwd = the clone,
                     so use {bench} for this folder. Wins over --agent.
   --arm A|B|both    which arm(s) to run (default: both)
+  --split dev|heldout|all   which corpus split to run (default: dev; the held-out
+                    third stays untouched unless you ask for it by name)
+  --concurrency N   run at most N instances at once (default: 1)
+  --budget-tokens N stop starting arms once this many tokens have been reported
+  --budget-ms N     stop starting arms once this much wall clock has passed
+  --run-id ID       the date/identity stamped on every row (default: today)
   --out DIR         where to materialise and write results.jsonl (default: temp)
   --keep            keep the temp output directory (--out is always kept)
   --timeout MS      kill one arm after this long (default: 600000)
@@ -106,7 +118,14 @@ function readClaim(path) {
 }
 
 function parseArgs(argv) {
-  const opts = { arm: "both", timeout: 600_000, yes: false, keep: false };
+  const opts = {
+    arm: "both",
+    timeout: 600_000,
+    yes: false,
+    keep: false,
+    concurrency: 1,
+    split: "dev",
+  };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === "--help" || flag === "-h") {
@@ -134,7 +153,23 @@ function parseArgs(argv) {
       if (!["A", "B", "both"].includes(value))
         throw new Error(`--arm must be A, B or both, got "${value}"`);
       opts.arm = value;
-    } else if (flag === "--timeout") {
+    } else if (flag === "--split") {
+      if (!["dev", "heldout", "all"].includes(value))
+        throw new Error(`--split must be dev, heldout or all, got "${value}"`);
+      opts.split = value;
+    } else if (flag === "--concurrency") {
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 1)
+        throw new Error(`--concurrency wants a positive whole number, got "${value}"`);
+      opts.concurrency = n;
+    } else if (flag === "--budget-tokens" || flag === "--budget-ms") {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0)
+        throw new Error(`${flag} wants a positive number, got "${value}"`);
+      if (flag === "--budget-tokens") opts.budgetTokens = n;
+      else opts.budgetMs = n;
+    } else if (flag === "--run-id") opts.runId = value;
+    else if (flag === "--timeout") {
       const n = Number(value);
       if (!Number.isInteger(n) || n < 1)
         throw new Error(`--timeout wants a positive whole number, got "${value}"`);
@@ -146,44 +181,333 @@ function parseArgs(argv) {
   return opts;
 }
 
-function runAgent(command, { cwd, env, timeout }) {
-  const started = Date.now();
-  const r = spawnSync(command, {
-    cwd,
-    shell: true,
-    encoding: "utf8",
-    windowsHide: true,
-    env,
-    timeout,
-  });
+/** A row for an arm the budget stopped before it started. */
+const SKIP_STATUS = "skipped-budget";
+
+function skipRow(instance, arm, meta) {
   return {
-    code: r.error ? null : r.status,
-    error: r.error?.message ?? null,
-    wallMs: Date.now() - started,
+    ...meta,
+    instance: instance.id,
+    arm,
+    status: SKIP_STATUS,
+    claim: null,
+    confirmed: false,
+    cause_hit: false,
+    abstained: false,
+    tokens: null,
+    wall_ms: 0,
+    problems: ["budget exhausted before this arm started"],
   };
 }
 
-function main() {
+/** A wall-clock and token budget shared by every arm in one run. */
+export function makeBudget({ maxTokens = null, maxMs = null } = {}) {
+  const startedAt = Date.now();
+  return {
+    tokens: 0,
+    maxTokens,
+    maxMs,
+    get ms() {
+      return Date.now() - startedAt;
+    },
+    exhausted() {
+      if (maxTokens != null && this.tokens >= maxTokens) return true;
+      if (maxMs != null && this.ms >= maxMs) return true;
+      return false;
+    },
+  };
+}
+
+/** Run `worker` over `items` with at most `limit` in flight; keeps input order. */
+export async function pool(items, limit, worker) {
+  const out = new Array(items.length);
+  let next = 0;
+  let active = 0;
+  return new Promise((resolveAll) => {
+    const launch = () => {
+      if (active === 0 && next >= items.length) return resolveAll(out);
+      while (active < limit && next < items.length) {
+        const i = next++;
+        active++;
+        Promise.resolve()
+          .then(() => worker(items[i], i))
+          .then((rows) => {
+            out[i] = rows;
+          })
+          .finally(() => {
+            active--;
+            launch();
+          });
+      }
+    };
+    launch();
+  });
+}
+
+/** Kill a process and its children. On Windows a shell spawn outlives `kill()`. */
+function killTree(child) {
+  if (process.platform === "win32" && child.pid) {
+    spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+  } else {
+    child.kill("SIGKILL");
+  }
+}
+
+/** One arm's agent process, async so a bounded pool can overlap them. */
+function runAgent(command, { cwd, env, timeout }) {
+  return new Promise((resolveRun) => {
+    const started = Date.now();
+    const child = spawn(command, { cwd, shell: true, windowsHide: true, env });
+    let out = "";
+    let errOut = "";
+    child.stdout?.on("data", (d) => {
+      out += d;
+    });
+    child.stderr?.on("data", (d) => {
+      errOut += d;
+    });
+    let error = null;
+    let timedOut = false;
+    const timer = timeout
+      ? setTimeout(() => {
+          timedOut = true;
+          killTree(child);
+        }, timeout)
+      : null;
+    child.on("error", (err) => {
+      error = err.message;
+    });
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      resolveRun({
+        code: error ? null : code,
+        error: error ?? (timedOut ? `timed out after ${timeout} ms` : null),
+        wallMs: Date.now() - started,
+        // The last 2KB of the agent's own output: enough to say why it died,
+        // small enough to keep the ledger readable.
+        log: `${out}\n${errOut}`.trim().slice(-2000),
+      });
+    });
+  });
+}
+
+/** A plain-text metrics table for the terminal; JSON stays the machine format. */
+export function formatTable(metrics, arms) {
+  const pct = (r) => (r.pct === null ? "no data" : `${r.pct}%`);
+  const lines = [
+    ["arm", "rows", "C1 hit", "C2 false-confirm", "C3 abstain", "C4 tok/row", "C5 ms/row"].join(
+      "\t",
+    ),
+  ];
+  for (const arm of arms) {
+    const m = metrics[`arm_${arm}`];
+    lines.push(
+      [
+        arm,
+        m.rows,
+        pct(m.C1_cause_hit),
+        pct(m.C2_false_confirm),
+        pct(m.C3_abstention),
+        m.C4_tokens.mean ?? "-",
+        m.C5_wall_ms.mean ?? "-",
+      ].join("\t"),
+    );
+  }
+  return lines.join("\n");
+}
+
+/** Materialise one instance and run its arms, returning the rows in arm order. */
+async function runInstance(instance, ctx) {
+  const { arms, agentCmd, root, timeout, budget, runId, model, agentName } = ctx;
+  const meta = { run: runId, model, agent: agentName, split: instance.split ?? "dev" };
+  const rows = [];
+  const failedRows = (problems) =>
+    arms.map((arm) => ({
+      ...meta,
+      instance: instance.id,
+      arm,
+      status: "materialize-failed",
+      claim: null,
+      confirmed: false,
+      cause_hit: false,
+      abstained: false,
+      tokens: null,
+      wall_ms: 0,
+      problems,
+    }));
+  const worktreeMode = instance.mode === "worktree";
+  const repoAbs = resolve(instance.repo);
+  // A per-run tag: a crashed run can leave locked files behind (an agent host may
+  // keep cwd handles in the arm checkout), and a fixed name would collide with
+  // them on the next run. Stale tagged dirs never collide; cleanup removes them
+  // when the locks release.
+  const tag = ctx.tag ?? "notag";
+  const base = worktreeMode
+    ? join(repoAbs, ".dt-worktrees", `${instance.id}-base-${tag}`)
+    : join(root, instance.id, "base");
+  const made = [];
+  try {
+    if (budget.exhausted()) return arms.map((arm) => skipRow(instance, arm, meta));
+
+    const mat = materialize(instance, { dest: base, timeout });
+    if (!mat.ok) {
+      return failedRows(mat.problems);
+    }
+    for (const arm of arms) {
+      if (budget.exhausted()) {
+        rows.push(skipRow(instance, arm, meta));
+        continue;
+      }
+      const armDir = join(root, instance.id, arm);
+      // Worktree arms must sit inside the repo, or the repro loses node_modules.
+      const repo = worktreeMode
+        ? join(repoAbs, ".dt-worktrees", `${instance.id}-${arm}-${ctx.tag ?? "notag"}`)
+        : join(armDir, "repo");
+      mkdirSync(armDir, { recursive: true });
+      if (worktreeMode) {
+        // The worktree sits inside the repo so the repro keeps node_modules.
+        const added = addWorktree(repoAbs, instance.commit, repo);
+        if (!added.ok) {
+          rows.push({
+            ...meta,
+            instance: instance.id,
+            arm,
+            status: "agent-error",
+            claim: null,
+            confirmed: false,
+            cause_hit: false,
+            abstained: false,
+            tokens: null,
+            wall_ms: 0,
+            agent_exit: null,
+            agent_log: added.problem,
+            problems: [added.problem],
+          });
+          continue;
+        }
+        made.push(repo);
+      } else {
+        cpSync(base, repo, { recursive: true });
+      }
+      const claimPath = join(armDir, "claim.json");
+      if (existsSync(claimPath)) rmSync(claimPath, { force: true });
+      const run = await runAgent(agentCmd, {
+        cwd: repo,
+        env: {
+          ...childEnv(),
+          DT_REPO: repo,
+          DT_ARM: arm,
+          DT_REPRO: instance.repro?.command ?? instance.oracle?.command,
+          DT_OUT: claimPath,
+          DT_INSTANCE: instance.id,
+        },
+        timeout,
+      });
+      if (run.error || run.code === null) {
+        // A crashed or missing agent is a harness failure, not an abstention:
+        // scoring it as "no claim" would inflate C3 and hide a broken arm.
+        rows.push({
+          ...meta,
+          instance: instance.id,
+          arm,
+          status: "agent-error",
+          claim: null,
+          confirmed: false,
+          cause_hit: false,
+          abstained: false,
+          tokens: null,
+          wall_ms: run.wallMs,
+          agent_exit: run.code,
+          agent_log: run.log,
+          problems: [run.error ?? "the agent command was signalled"],
+        });
+        continue;
+      }
+      const claim = readClaim(claimPath);
+      if (!claim && run.code !== 0) {
+        // Exited badly and wrote nothing: a broken arm, not an abstention.
+        rows.push({
+          ...meta,
+          instance: instance.id,
+          arm,
+          status: "agent-error",
+          claim: null,
+          confirmed: false,
+          cause_hit: false,
+          abstained: false,
+          tokens: null,
+          wall_ms: run.wallMs,
+          agent_exit: run.code,
+          agent_log: run.log,
+          problems: [`the agent exited ${run.code} without writing a claim`],
+        });
+        continue;
+      }
+      const row = scoreClaim(instance, arm, claim, run.wallMs);
+      budget.tokens += Number(row.tokens) || 0;
+      rows.push({
+        ...meta,
+        ...row,
+        agent_exit: run.code,
+        ...(row.status === "ok" ? {} : { agent_log: run.log }),
+        oracle_verified: !!mat.oracle_verified,
+      });
+    }
+  } catch (err) {
+    // One instance's infrastructure failure must not kill a thirty-instance run
+    // or lose every other row: it becomes rows that say what broke.
+    for (const dir of made) {
+      try {
+        if (instance.mode === "worktree") removeWorktree(resolve(instance.repo), dir);
+      } catch {
+        /* cleanup is best-effort */
+      }
+    }
+    return failedRows([
+      `instance infrastructure failure: ${String(err?.message ?? err).slice(0, 300)}`,
+    ]);
+  } finally {
+    if (worktreeMode) for (const dir of [base, ...made]) removeWorktree(repoAbs, dir);
+  }
+  return rows;
+}
+
+async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (!opts) return;
   const raw = opts.instance
     ? JSON.parse(readFileSync(opts.instance, "utf8"))
     : loadInstances(opts.instances);
-  const instances = Array.isArray(raw) ? raw : [raw];
-  const validation = checkInstances(instances);
+  const all = Array.isArray(raw) ? raw : [raw];
+  const validation = checkInstances(all);
   if (validation.length) {
     console.error(`REFUSED: ${validation.length} invalid instance(s)\n`);
     for (const p of validation) console.error(`  - ${p}`);
     process.exitCode = 1;
     return;
   }
+  const instances = all.filter((i) => opts.split === "all" || (i.split ?? "dev") === opts.split);
+  if (!instances.length) {
+    console.error(`[run] no instances in split "${opts.split}" (${all.length} in the corpus)`);
+    process.exitCode = 1;
+    return;
+  }
   const arms = opts.arm === "both" ? ["A", "B"] : [opts.arm];
+  const budgetLabel =
+    opts.budgetTokens == null && opts.budgetMs == null
+      ? "none"
+      : `${opts.budgetTokens ?? "unlimited"} tokens / ${opts.budgetMs ?? "unlimited"} ms`;
 
   if (!opts.yes) {
-    console.error(`[run] would run ${arms.length} arm(s) over ${instances.length} instance(s):`);
+    console.error(`[run] would run ${arms.length} arm(s) over ${instances.length} instance(s)`);
+    console.error(
+      `  split: ${opts.split}   concurrency: ${opts.concurrency}   budget: ${budgetLabel}`,
+    );
     console.error(`  agent: ${opts.agentCmd ? "custom" : (opts.agent ?? "(auto-detect)")}`);
     for (const inst of instances)
-      console.error(`  ${inst.id}: ${inst.repro.command}  arms ${arms.join(", ")}`);
+      console.error(
+        `  ${inst.id}: ${inst.repro?.command ?? inst.oracle?.command}  arms ${arms.join(", ")}`,
+      );
     console.error("\nDRY RUN — nothing cloned or executed. Re-run with --yes.");
     process.exitCode = 3;
     return;
@@ -196,69 +520,27 @@ function main() {
       `no agent harness detected on PATH — pass --agent ${Object.keys(HARNESSES).join("|")}, or --agent-cmd "<command>"`,
     );
   const agentCmd = (opts.agentCmd ?? agentCommand(harness)).replaceAll("{bench}", BENCH_DIR);
+  const agentName = opts.agentCmd ? "custom" : harness;
+  const runId = opts.runId ?? new Date().toISOString().slice(0, 10);
 
   const temp = !opts.out;
   const root = opts.out ?? mkdtempSync(join(tmpdir(), "dt-run-"));
-  const rows = [];
-  for (const instance of instances) {
-    const base = join(root, instance.id, "base");
-    const mat = materialize(instance, { dest: base, timeout: opts.timeout });
-    if (!mat.ok) {
-      for (const arm of arms) {
-        rows.push({
-          instance: instance.id,
-          arm,
-          status: "materialize-failed",
-          claim: null,
-          confirmed: false,
-          cause_hit: false,
-          abstained: false,
-          tokens: null,
-          wall_ms: 0,
-          problems: mat.problems,
-        });
-      }
-      continue;
-    }
-    for (const arm of arms) {
-      const armDir = join(root, instance.id, arm);
-      const repo = join(armDir, "repo");
-      mkdirSync(armDir, { recursive: true });
-      cpSync(base, repo, { recursive: true });
-      const claimPath = join(armDir, "claim.json");
-      if (existsSync(claimPath)) rmSync(claimPath, { force: true });
-      const run = runAgent(agentCmd, {
-        cwd: repo,
-        env: {
-          ...childEnv(),
-          DT_REPO: repo,
-          DT_ARM: arm,
-          DT_REPRO: instance.repro.command,
-          DT_OUT: claimPath,
-          DT_INSTANCE: instance.id,
-        },
-        timeout: opts.timeout,
-      });
-      if (run.error || run.code === null) {
-        // A crashed or missing agent is a harness failure, not an abstention:
-        // scoring it as "no claim" would inflate C3 and hide a broken arm.
-        rows.push({
-          instance: instance.id,
-          arm,
-          status: "agent-error",
-          claim: null,
-          confirmed: false,
-          cause_hit: false,
-          abstained: false,
-          tokens: null,
-          wall_ms: run.wallMs,
-          problems: [run.error ?? "the agent command was signalled"],
-        });
-        continue;
-      }
-      rows.push(scoreClaim(instance, arm, readClaim(claimPath), run.wallMs));
-    }
-  }
+  const budget = makeBudget({ maxTokens: opts.budgetTokens, maxMs: opts.budgetMs });
+  const tag = `${Date.now().toString(36)}${process.pid.toString(36)}`;
+  const results = await pool(instances, opts.concurrency, (instance) =>
+    runInstance(instance, {
+      arms,
+      agentCmd,
+      root,
+      timeout: opts.timeout,
+      budget,
+      runId,
+      model: process.env.DT_MODEL ?? null,
+      agentName,
+      tag,
+    }),
+  );
+  const rows = results.flat();
 
   // The ledger lives outside a temp `root` that gets deleted, or its path is dead.
   const ledger = opts.out ? join(root, "results.jsonl") : join(WORK, "results.jsonl");
@@ -267,7 +549,38 @@ function main() {
 
   const metrics = { all: computeMetrics(rows) };
   for (const arm of arms) metrics[`arm_${arm}`] = computeMetrics(rows.filter((r) => r.arm === arm));
-  console.log(JSON.stringify({ rows: rows.length, root, ledger, metrics }, null, 2));
+  const bySplit = {};
+  for (const s of new Set(rows.map((r) => r.split)))
+    bySplit[s] = computeMetrics(rows.filter((r) => r.split === s));
+  const skipped = rows.filter((r) => r.status === SKIP_STATUS).length;
+
+  console.log(
+    JSON.stringify(
+      {
+        run: runId,
+        model: process.env.DT_MODEL ?? null,
+        agent: agentName,
+        split: opts.split,
+        concurrency: opts.concurrency,
+        budget: {
+          max_tokens: opts.budgetTokens ?? null,
+          max_ms: opts.budgetMs ?? null,
+          tokens_spent: budget.tokens,
+          wall_ms: budget.ms,
+          skipped_rows: skipped,
+        },
+        rows: rows.length,
+        root,
+        ledger,
+        metrics,
+        by_split: bySplit,
+      },
+      null,
+      2,
+    ),
+  );
+  // stdout stays one JSON document; the human table goes to stderr.
+  console.error(formatTable(metrics, arms));
   if (temp && !opts.keep) rmSync(root, { recursive: true, force: true });
   const failed = rows.filter(
     (r) => r.status === "materialize-failed" || r.status === "agent-error",
@@ -277,7 +590,7 @@ function main() {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   try {
-    main();
+    await main();
   } catch (err) {
     console.error(`[run] ${err.message}`);
     process.exitCode = 2;
