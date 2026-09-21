@@ -18,6 +18,7 @@
   <p>
     <a href="#what-it-is">What it is</a> ·
     <a href="#how-it-works">How it works</a> ·
+    <a href="#use-it">Use it</a> ·
     <a href="#install">Install</a> ·
     <a href="#the-tools">Tools</a> ·
     <a href="docs/guide.md">Guide</a> ·
@@ -86,25 +87,85 @@ Read [`docs/guide.md`](docs/guide.md) for a full worked walkthrough, and
 
 ---
 
+## Use it
+
+One skill, five scripts. The host agent loads `ducktective` when the task matches its
+description, or you name it outright — _"Use the Ducktective skill: this test has been
+failing since Tuesday."_ In OpenCode the skill id is `ducktective`; the agent loads it
+through the `skill` tool, so the install is the only setup.
+
+| Situation                  | Ask for                                                                                                    | What actually runs                                                           |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| A test is red              | "this test fails — find the cause before proposing a fix"                                                  | `reproduce` gates it, then `run_check` falsifies leads one at a time         |
+| A stack trace, no test     | paste the trace: "where does this come from?"                                                              | `reproduce` parses it; a check still has to run before anything is confirmed |
+| It worked last release     | "it worked at v1.2, broken now"                                                                            | `bisect` prices the walk and names the first bad commit                      |
+| You already suspect a line | `check.mjs --claim "app.py:7 drops the last row" --repro … --check … --predict fail --control … --blind …` | one command, an evidence box and a letter grade                              |
+| You cannot reproduce it    | "here is the symptom"                                                                                      | the gate stops at `does_not_reproduce` instead of guessing                   |
+| The same bug, again        | `write_case.mjs --causes`                                                                                  | the recurrence index, by root cause                                          |
+
+Any agent that can run a shell command can use the scripts directly — the skill is a
+convenience, not a runtime:
+
+```bash
+# from an installed skill, or straight from a clone
+node .opencode/skills/ducktective/scripts/reproduce.mjs --cmd "npm test" --yes
+node .opencode/skills/ducktective/scripts/run_check.mjs --file .ducktective/draft.json \
+  --candidate 1 --predict fail \
+  --cmd "node --test tests/totals.test.mjs" \
+  --control "node --test tests/health.test.mjs" \
+  --blind "node --test tests/invariants.test.mjs" --yes
+```
+
+The agent is held to these rules, not asked politely:
+
+1. **Reproduce first.** No in-repo evidence is `error`, not a cause.
+2. **One candidate hard before escalating.** An `inconclusive` lead does not unlock the next.
+3. **A matching prediction is not enough.** `confirmed` needs a passing control _or_ a
+   flipped probe — a check that never touches the accused line agrees with any prediction.
+4. **A second, independently written check** (`--blind`) must also reproduce the claim, or it
+   is filed `unreplicated`, not `confirmed`.
+5. **The store refuses unearned verdicts.** A hand-typed verdict, a verdict that contradicts
+   its own exit code, or a patch before a confirmed cause cannot be written down.
+
+The output is not a patch. It is a confirmed cause at `file:line`, a Markdown case file a
+human reads in thirty seconds, and a JSONL line the next investigation can read.
+
+---
+
 ## Install
 
 From a clone — two commands, no dependencies:
 
 ```bash
 git clone https://github.com/adeerkhan/ducktective && cd ducktective
-node skills/ducktective/bin/install.mjs --target claude
+node skills/ducktective/bin/install.mjs --target claude     # Claude Code
+node skills/ducktective/bin/install.mjs --target opencode   # OpenCode, global
 ```
 
-| Target            | Installs to                                                                |
-| ----------------- | -------------------------------------------------------------------------- |
-| `--target claude` | `~/.claude/skills/ducktective`                                             |
-| `--dest <dir>`    | anywhere else — Cursor, Copilot, Gemini CLI, anything reading a `SKILL.md` |
+| Target              | Installs to                                                             |
+| ------------------- | ----------------------------------------------------------------------- |
+| `--target claude`   | `~/.claude/skills/ducktective`                                          |
+| `--target opencode` | `~/.config/opencode/skills/ducktective` (OpenCode's global skills dir)  |
+| `--dest <dir>`      | anywhere else — Cursor, Copilot, Gemini CLI, or a project-local install |
 
-`claude` is the only named target: it is the one scan path checked against documentation and
-used on a real machine. Everything else takes `--dest`. The installer copies `SKILL.md`, the
-case-file schema, and `scripts/` — never the tests or itself. It **refuses to overwrite a
-skill file you have edited** (`--force` to mean it), `--dry-run` prints the plan, and
-re-running an unchanged install writes nothing.
+**OpenCode** discovers skills in `~/.config/opencode/skills` (global) and `.opencode/skills`
+(project, searched from the current directory up to the project root); the skill id is the
+directory name, `ducktective`. It also reads `~/.claude/skills` for compatibility, so
+`--target claude` works in OpenCode too. To share the skill across a team, install it into
+the repo and commit it:
+
+```bash
+node skills/ducktective/bin/install.mjs --dest .opencode/skills/ducktective
+git add .opencode/skills/ducktective
+```
+
+`claude` and `opencode` are the two named targets, each checked against its agent's
+documentation. Everything else takes `--dest`, which was always the general case. The
+installer copies `SKILL.md`, the case-file schema, and `scripts/` — never the tests or
+itself. It **won't clobber a skill file you have edited**: a re-install after an upgrade
+updates the files it wrote, and refuses only the ones you changed by hand (`--force` to
+overwrite those). `--dry-run` prints the plan, and re-running an unchanged install writes
+nothing.
 
 **Requirements:** Node 20.19+ (declared as `engines`). The corpus needs Python for its cases;
 the gate itself drives any test runner, because `--cmd` is just a shell command.
@@ -113,16 +174,16 @@ the gate itself drives any test runner, because `--cmd` is just a shell command.
 
 ## The tools
 
-Four scripts, zero dependencies, plain `node`. Any agent that can run a shell command can use
-them directly. `check.mjs` composes them into one command that grades a claim.
+Five scripts, zero dependencies, plain `node`. Any agent that can run a shell command can use
+them directly; `check.mjs` composes the other four into one command that grades a claim.
 
-| Tool             | What it does                                                                                                                                                               | Exit codes                                                         |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `reproduce.mjs`  | The gate. Runs the command, parses the traceback, seeds candidates.                                                                                                        | `0` reproduced · `1` does not reproduce (**stop**) · `2` never ran |
-| `bisect.mjs`     | Walks history by binary search (O(log n) runs) for the first bad commit, its hunks, and whether your claim sits inside them. Prices the walk and refuses above `--budget`. | `0` found · `1` refused · `2` inconclusive · `3` dry run           |
-| `run_check.mjs`  | Executes the oracle and decides `confirmed`/`falsified` from `--predict` against the exit code. `--control`, `--probe`, `--verify`, `--depth`, `--escalate`.               | `0` recorded · `1` refused · `2` not evaluable · `3` dry run       |
-| `write_case.mjs` | The store and the enforcement point. Refuses unearned verdicts; indexes causes for recurrence. `--causes` prints the index.                                                | `0` stored · `1` refused · `2` bad input                           |
-| `check.mjs`      | One command that composes the four and prints an evidence box plus a letter grade.                                                                                         | `0` report produced (including negative grades) · `3` dry run      |
+| Tool             | What it does                                                                                                                                                                                       | Exit codes                                                         |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `reproduce.mjs`  | The gate. Runs the command, parses the traceback, seeds candidates.                                                                                                                                | `0` reproduced · `1` does not reproduce (**stop**) · `2` never ran |
+| `bisect.mjs`     | Walks history by binary search (O(log n) runs) for the first bad commit, its hunks, and whether your claim sits inside them. Prices the walk and refuses above `--budget`.                         | `0` found · `1` refused · `2` inconclusive · `3` dry run           |
+| `run_check.mjs`  | Executes the oracle and decides `confirmed`/`falsified` from `--predict` against the exit code. `--control`, `--probe`, `--blind` (required for `confirmed`), `--verify`, `--depth`, `--escalate`. | `0` recorded · `1` refused · `2` not evaluable · `3` dry run       |
+| `write_case.mjs` | The store and the enforcement point. Refuses unearned verdicts; indexes causes for recurrence. `--causes` prints the index.                                                                        | `0` stored · `1` refused · `2` bad input                           |
+| `check.mjs`      | One command that composes the four and prints an evidence box plus a letter grade.                                                                                                                 | `0` report produced (including negative grades) · `3` dry run      |
 
 ### What `write_case.mjs` refuses
 
@@ -133,6 +194,9 @@ advice:
   — that is, **a verdict typed by hand**
 - a verdict that contradicts its own check (`predicted pass, exit 1 ⇒ falsified`)
 - `confirmed` with no discrimination receipt — no passing control and no flipped probe
+- `confirmed` with no confirming blind re-derivation — the second check is executed by
+  `run_check --blind` and recorded with its exit code, not typed in; a non-reproduction is
+  filed `unreplicated`
 - a pass prediction confirmed without a flipped probe (a passing control cannot rule out an
   always-pass check)
 - candidates on a case that did not reproduce
@@ -244,6 +308,11 @@ secondary. Fixing is the host agent's job.
 **Why isn't it an MCP server?** A server is a daemon, a port, and a lifecycle. A skill that
 shells out works in every agent that can run `python -m pytest`, and its output is a file you
 can `grep`.
+
+**Which agents does it work with?** Any that can read a `SKILL.md` and run shell commands.
+Named installs for Claude Code and OpenCode; everything else takes `--dest`, including a
+project-local `.opencode/skills/ducktective` you commit with the repo. The scripts are plain
+Node with zero dependencies, so an agent without skill support can still run them directly.
 
 **Why does `run_check` need `--yes`?** Because the check is a model-authored command run
 through your shell in your repo. A denylist would be theatre — any `&&` defeats it — so you

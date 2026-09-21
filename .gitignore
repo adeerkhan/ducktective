@@ -172,4 +172,6 @@ cov-*.json
 .coverage.*
 htmlcov/
 graphify-out/
+corpus/
 docs/
+evals/p1-3-2026-09-21/

@@ -31,24 +31,37 @@ const SKILL_NAME = "ducktective";
 const IGNORE = new Set(["tests", "bin", "__pycache__", ".pytest_cache"]);
 
 /**
- * One verified destination, plus an escape hatch.
+ * The record of the last install, so an upgrade can tell "upstream changed this"
+ * from "the user changed this". Without it every differing file looks like a hand
+ * edit, and every release makes `--force` mandatory.
+ */
+const MANIFEST = ".ducktective-install.json";
+const INSTALLED_SKIP = new Set([MANIFEST]);
+
+/**
+ * The scan paths verified here, plus an escape hatch.
  *
- * Claude Code reads ~/.claude/skills/<name>; that is the only target whose scan
- * path has been checked against documentation and used on a real box. Codex's
- * `.agents/skills` and a project-local `.agents/skills` were wired up here for a
- * demand that has never appeared — every guess costs a test to keep honest, so
- * they went, and anything else (Cursor, Copilot, Gemini CLI) takes --dest, which
- * was always the general case.
+ * Claude Code reads ~/.claude/skills/<name>. OpenCode reads
+ * ~/.config/opencode/skills/<name> (V2 docs: Configure → Skills), and also reads
+ * ~/.claude/skills for compatibility, so the Claude target works there too.
+ * `--dest` covers a project-local install (.opencode/skills/<name>, committed
+ * with the repo) and anything else (Cursor, Copilot, Gemini CLI) that reads a
+ * SKILL.md. `.agents/skills` is not a named target — it is another agent's
+ * namespace rather than this skill's — but OpenCode reads it for compatibility
+ * too, so `--dest ~/.agents/skills/ducktective` reaches both.
  */
 const TARGETS = {
   claude: () => join(homedir(), ".claude", "skills", SKILL_NAME),
+  opencode: () => join(homedir(), ".config", "opencode", "skills", SKILL_NAME),
 };
 
-const USAGE = `usage: install.mjs [--target claude] [--dest DIR] [--source DIR] [--force] [--dry-run]
-  --target claude   ~/.claude/skills/ducktective (the only scan path verified here)
-  --dest DIR        an explicit directory; wins over --target
-  --force           overwrite files whose contents differ
-  --dry-run         print the plan, write nothing`;
+const USAGE = `usage: install.mjs [--target claude|opencode] [--dest DIR] [--source DIR] [--force] [--dry-run]
+  --target claude     ~/.claude/skills/ducktective (Claude Code, and OpenCode's compat path)
+  --target opencode   ~/.config/opencode/skills/ducktective (OpenCode, global)
+  --dest DIR          an explicit directory; wins over --target.
+                      Project-local for OpenCode: --dest .opencode/skills/ducktective
+  --force             overwrite files whose contents differ
+  --dry-run           print the plan, write nothing`;
 
 function parseArgs(argv) {
   const opts = { force: false, dryRun: false };
@@ -140,12 +153,20 @@ async function main() {
     throw new Error("the source has no SKILL.md — refusing to install an empty skill");
 
   const plan = [];
+  const sourceHashes = {};
+  const previous = readManifest(join(opts.dest, MANIFEST));
   for (const rel of files) {
     const data = await source.read(rel);
+    const wanted = hash(data);
+    sourceHashes[rel] = wanted;
     const target = join(opts.dest, rel);
     const current = existsSync(target) ? readFileSync(target) : null;
-    if (current && hash(current) !== hash(data)) {
-      if (!opts.force) {
+    const currentHash = current ? hash(current) : null;
+    if (current && currentHash !== wanted) {
+      // Only a file the last install wrote may be updated silently; a file that
+      // diverged from the manifest is the user's, and is refused without --force.
+      const ours = previous?.files?.[rel] === currentHash;
+      if (!opts.force && !ours) {
         plan.push({ rel, action: "CONFLICT" });
         continue;
       }
@@ -181,6 +202,11 @@ async function main() {
     return;
   }
   const changed = plan.filter((p) => p.action !== "same");
+  if (!opts.dryRun)
+    writeFileSync(
+      join(opts.dest, MANIFEST),
+      JSON.stringify({ source: source.kind, files: sourceHashes }, null, 2) + "\n",
+    );
   console.log(
     JSON.stringify(
       {
@@ -217,7 +243,16 @@ if (process.argv[1] && pathToFileURL(realpathOr(process.argv[1])).href === impor
 
 /** Every file currently installed under `dest`, in the same relative form `skillFiles` uses. */
 function listInstalled(dest) {
-  return existsSync(dest) ? walkRel(dest) : [];
+  return existsSync(dest) ? walkRel(dest, INSTALLED_SKIP) : [];
+}
+
+/** The manifest of the last install, or null when there is none or it is unreadable. */
+function readManifest(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 /** node realpaths `import.meta.url` but leaves argv[1] as typed; compare like for like. */

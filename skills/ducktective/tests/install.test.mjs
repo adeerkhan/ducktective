@@ -8,7 +8,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  cpSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,9 +81,10 @@ test("a clean install writes every listed file and nothing else", (t) => {
   for (const rel of skillFiles(SKILL_ROOT)) assert.ok(existsSync(join(to, rel)), `${rel} missing`);
 });
 
-test("--target resolves to the folder Claude Code actually scans", (t) => {
-  // Facts, not guesses: Claude Code reads ~/.claude/skills. --dry-run resolves the
-  // target and writes nothing, so this never touches the real home directory.
+test("--target resolves to the folder each agent actually scans", (t) => {
+  // Facts, not guesses: Claude Code reads ~/.claude/skills; OpenCode reads
+  // ~/.config/opencode/skills (V2 docs, Configure → Skills). --dry-run resolves
+  // the target and writes nothing, so this never touches the real home directory.
   const where = emptyHome();
   t.after(() => rmSync(where, { recursive: true, force: true }));
   const forTarget = (target) => {
@@ -94,6 +103,7 @@ test("--target resolves to the folder Claude Code actually scans", (t) => {
     return JSON.parse(run.stdout).dest;
   };
   assert.equal(forTarget("claude"), join(where, ".claude", "skills", "ducktective"));
+  assert.equal(forTarget("opencode"), join(where, ".config", "opencode", "skills", "ducktective"));
   // The retired targets stay refused: accepting a name would promise an install
   // for an agent whose scan path nobody has verified.
   for (const gone of ["codex", "agents"])
@@ -105,10 +115,11 @@ test("--target resolves to the folder Claude Code actually scans", (t) => {
       2,
       `--target ${gone} is retired and must be refused, not guessed`,
     );
-  assert.ok(
-    !forTarget("claude").startsWith(process.cwd()),
-    "a user target must not resolve inside the checkout",
-  );
+  for (const target of ["claude", "opencode"])
+    assert.ok(
+      !forTarget(target).startsWith(process.cwd()),
+      `the ${target} target must not resolve inside the checkout`,
+    );
 });
 
 test("run from a clone, it installs itself with no --source and no network", (t) => {
@@ -167,6 +178,42 @@ test("a hand-edited skill file is never silently overwritten", (t) => {
   assert.equal(forced.code, 0);
   assert.equal(JSON.parse(forced.out).written, 1);
   assert.doesNotMatch(readFileSync(skill, "utf8"), /tuned/);
+});
+
+test("an untouched install upgrades without --force; a hand-edit still conflicts", (t) => {
+  const to = dest(t);
+  install(["--dest", to]);
+
+  // A newer source: same skill, one file changed upstream.
+  const src = mkdtempSync(join(tmpdir(), "dt-src-"));
+  t.after(() => rmSync(src, { recursive: true, force: true }));
+  cpSync(SKILL_ROOT, src, { recursive: true });
+  const upstreamSkill = join(src, "SKILL.md");
+  writeFileSync(
+    upstreamSkill,
+    readFileSync(upstreamSkill, "utf8") + "\n<!-- upstream -->\n",
+    "utf8",
+  );
+
+  const upgraded = install(["--source", src, "--dest", to]);
+  assert.equal(upgraded.code, 0, upgraded.err);
+  assert.equal(
+    JSON.parse(upgraded.out).written,
+    1,
+    "a file the last install wrote updates without --force",
+  );
+
+  // The user edits the installed copy: the next upstream change must be refused.
+  const installed = join(to, "SKILL.md");
+  writeFileSync(installed, readFileSync(installed, "utf8") + "\n<!-- mine -->\n", "utf8");
+  writeFileSync(
+    upstreamSkill,
+    readFileSync(upstreamSkill, "utf8") + "\n<!-- upstream 2 -->\n",
+    "utf8",
+  );
+  const refused = install(["--source", src, "--dest", to]);
+  assert.equal(refused.code, 1);
+  assert.match(refused.err, /Refusing to overwrite 1 file/);
 });
 
 test("--dry-run plans without writing, and a bad --target is refused", (t) => {

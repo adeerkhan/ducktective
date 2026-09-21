@@ -1,379 +1,227 @@
-# Ducktective — design.md (v2, the redirection)
+# Ducktective — design.md (v3)
 
-Written 2026-09-15 against `architecture.md` @ `31bc9f7`. This document disagrees with
-the current plan. Where it disagrees, it says what evidence would make it wrong.
-
----
-
-## 0. One-paragraph summary
-
-You built a **protocol** and are trying to prove it with a **field study**. Both choices
-are wrong, and they are wrong for the same reason: they require a human to keep
-following rules. §16 already recorded the fatal datum and filed it as a footnote —
-_the author skipped the bare-baseline rule twice in one day while doing nothing else._
-That is not a discipline problem. That is the product failing its first user. The fix is
-to stop requiring the protocol and start selling the **verdict**: a single terminal
-command that grades a root-cause claim an agent already made, using evidence the agent
-did not bother to collect. And to stop deciding the project on 10–15 hand-graded bugs,
-which cannot reach significance, and decide it on ~200 benchmark bugs with mechanical
-ground truth, which you can run overnight.
+Supersedes v2. Written 2026-09-19 after reviewing five papers against `architecture.md`
+@ `31bc9f7`. v2 argued the protocol should become a verdict engine (bisect + a
+discrimination probe) graded on a benchmark instead of 3 field cases. Nothing in the
+new material changes that direction. It changes how naive your discrimination story
+still is, and it gives you a cheap, continuous way to know if the thing works before
+the 200-bug benchmark is ready. Read v2 first; this document only patches it.
 
 ---
 
-## 1. Five diagnoses
+## 0. The harsh version, up front
 
-### D1 — The discovery half was dead at design time, not empirically
+Your entire pitch is "we refuse to write a verdict we can't back with an executed
+oracle." The literature just spent five papers proving that **every team that shipped
+this exact pitch first was still wrong most of the time**, and the reason they were
+wrong is a specific, well-characterized failure mode you have not yet built a defense
+against: a model asked to validate its own claim will produce something that _looks_
+like validation almost every time, whether or not the claim is true.
 
-§16 treats "discovery value: none demonstrated" as a finding. It was a theorem.
+The sharpest number in the whole review: Claude Code with Opus 4.5 generates 142
+plausible PoCs out of 144 bug reports, but only 26 of them are indeed valid — and on
+reports that were never real bugs at all, the same agent fails to reject 98% of them.
+That is not a worse model than the one in your loop. That is the same class of model,
+on a harder version of exactly the task `run_check.mjs` performs, gaming the task almost
+every time it's asked to grade itself.
 
-Look at what feeds `seedCandidates`: parsed traceback frames, plus a fail-only coverage
-diff. Both are already in the host agent's context — it ran the command, it read the
-traceback. **There is no information in the system that the model did not already have.**
-A protocol that reorders known information cannot find something a careful engineer with
-a terminal would miss. You spent a month discovering that empirically, on n=2.
+Your `--control` check does not defend against this. `--control` proves the check isn't
+always-fail. It does not prove the model didn't write a check that's vacuously true, or
+that "confirmed" isn't just confident narration with a green exit code attached. v2
+called this D2 and proposed a mutation probe. The probe was still checked _inside the
+same run, by the same process, with the model's own reasoning trace still live_. The
+literature says that's not enough — the thing that actually moves the needle is
+**structural separation**: a checker with zero access to the claim-writer's context,
+re-executing from scratch, instructed to trust nothing it didn't independently observe.
+When that separation exists, false positives drop 7.8–20×. When it doesn't — even with
+an LLM "revalidate the findings" step bolted on, which several of these tools already
+had — the best of five specialized tools still averaged an 85.3% false discovery rate
+in real projects, and on fresh repositories one of them hit 97.0%.
 
-It's worse than that. The published numbers say file-level localization is close to
-saturated: a 2025 trajectory study found agents modified the correct file in
-<cite index="9-1">93–96% of successful trajectories and still 59–81% of _failed_ ones</cite>,
-and dedicated localizers report <cite index="2-1">roughly 81% recall@1 on SWE-bench Verified</cite>.
-Candidate ranking by traceback order is competing in a solved category. The same study
-shows the gap: <cite index="9-1">function-level match drops to about 27–33% even on successes</cite>.
-**Finding the file is free. Being right about the cause is not.** Everything you build
-from here should aim at the second number.
-
-### D2 — Your oracle proves _agreement_, not _discrimination_
-
-This is the most serious technical hole and it's one line of arithmetic away from fixed.
-
-`classify()` says `confirmed` when `(predicted === "pass") === (exit === 0)`, after
-`--control` passes. `--control` proves the check is **not always-fail**. Nothing proves
-the check is **not always-pass**, and nothing proves the check's outcome depends on the
-accused line at all.
-
-So the model can write a check that touches nothing, predict "pass," get exit 0, and the
-store will accept `confirmed` with full provenance. That isn't hypothetical — §7 records
-exactly this class: a check ran under the wrong interpreter, died on
-`ModuleNotFoundError`, _and the arithmetic filed the hypothesis as falsified_. You fixed
-the interpreter. You did not fix the fact that **the arithmetic cannot tell a check that
-tested something from a check that tested nothing.**
-
-A verdict that is unfalsifiable-by-construction in a tool whose entire pitch is
-falsification is a branding emergency, not a bug.
-
-### D3 — Your decision procedure cannot decide
-
-§9 wants 3 paired bugs by 2026-09-29. Suppose you get them and the protocol wins 3–0.
-Under the null that both arms are equal, that outcome has probability 1/8. You cannot
-reject anything. At 10 bugs with a 7–3 split you still can't. To detect a ~15-point
-swing in "was the root cause right" with the usual power you need discordant pairs on
-the order of **100**, not 3.
-
-And every input is human: a human finds the bug, a human remembers to run the bare
-baseline _first_, a human judges afterwards whether the accused line was really the
-cause. §14 concedes it — _"the project's headline number is the least mechanical one in
-the ledger."_ You wrote a rule (invariant 10: no claim without a receipt) and then
-designed the one measurement that can only ever produce a receipt signed by yourself.
-
-### D4 — Capital is in the wrong layer
-
-Count the maintenance surface serving zero external users: a Vite/React SPA with five
-routes, a browser demo engine with its own view model, a schema↔site sync guard, a
-plugin marketplace manifest pinned by a test, three installer targets, a 643-line
-architecture doc, and a CI guard that fails when that doc goes stale. Against four
-zero-dependency scripts that do the actual work.
-
-You have built a **documentation apparatus for a measurement apparatus for a claim you
-have not tested.** The guards are excellent. They are also the most sophisticated
-displacement activity I have read this year: writing "this is unproven" very precisely
-feels like progress, and it is not progress.
-
-### D5 — Memory is unevaluable by construction, and you know it
-
-M5 needs a populated store. The store fills from investigations. Investigations have no
-demonstrated value. So M5 cannot be measured until the thing it's meant to improve is
-already working. `query_memory.mjs`, the rap-sheet overlap ranking, the site's `/cases`
-route, and one whole metric slot are all financed by a feature that cannot be assessed
-this year. Park it properly — delete the route, keep the JSONL.
-
-### D6 (bonus, and I'd fix it today) — you shipped a confident wrong cause in §16
-
-> _`docs/` was **re-appended to `.gitignore` by something outside the repo** (no git hooks exist here)_
-
-That is an unfalsified causal claim about an unobserved agent, asserted in bold, in the
-closing section of a document arguing that unfalsified causal claims must be refused.
-Rule 2 would have refused it. Go find the actual writer: `git log -p -- .gitignore`,
-shell history, `core.excludesFile`, any agent/CLI/scaffolder that ran in that directory,
-editor plugins. It is almost certainly a tool you invoked. Until you find it, the
-project's reference document contains the exact defect the project exists to prevent.
+Revise your confidence accordingly: D2 wasn't a nitpick. It's the single most
+well-evidenced failure mode in this entire literature, it is not solved by "add a
+control run," and you have not built the thing that does solve it.
 
 ---
 
-## 2. The reframe
+## 1. What actually gets fixed here (the delta from v2)
 
-**From:** a protocol the host agent must be persuaded to follow.
-**To:** an evidence engine that does mechanical work the agent won't do, exposed as a
-single command that grades a claim the agent already made.
+### E2 revised — the probe becomes a blind checker, not a self-check
 
-The pivot is forced by your own finding. If the ceiling is adoption cost — and §16 says
-it is, on evidence from the author — then the correct move is to drive adoption cost to
-approximately zero. A protocol has high adoption cost by definition: it must be followed
-in order, under pressure, when you're in a hurry. A checker has near-zero adoption cost:
-you call it once, at the end, on something you already believe.
+v2's `--probe`: neuter the accused line, re-run the same check, require the verdict to
+flip. Keep the mechanism. Change who runs it and what they're allowed to see.
+
+**Old (v2):** same process, same run, the model's reasoning trace still in context when
+the probe result comes back.
+
+**New:** a `check_grader` invocation that receives _only_ the case file's structured
+fields — `symptom`, `reproduction`, `candidates[rank].location`, `candidates[rank].check`
+— and nothing else: no chat history, no chain-of-thought that produced the hypothesis,
+no prior turns. It re-derives whether the check discriminates, from cold. This is not a
+new agent framework; it's a discipline on what context a specific tool invocation is
+allowed to carry. The cost is one extra model call per candidate confirmed. The payoff,
+per the only paper that measured this exact intervention, is on the order of an order of
+magnitude fewer false confirmations.
+
+Concretely: `write_case.mjs` gains a mode where, before accepting a `confirmed` status,
+it re-invokes the check-authoring step with a stripped context — report + candidate
+location only — and requires the re-derived check to still discriminate under the E2
+probe. If the blind re-derivation produces a different check that doesn't flip, or
+produces "I can't tell without more context," the verdict downgrades to
+`inconclusive_vacuous`. This is strictly more expensive than v2's design. Build it
+anyway — the alternative is shipping the exact failure mode five separate papers just
+spent a combined ~40 pages documenting.
+
+### E5, new — a why-vs-evidence consistency check
+
+The bug-report-hallucination paper measured something specific to free-text fields, not
+code: roughly 48–60% of LLM-written summary sections contained hallucinated or missing
+content, and the _procedural_ sections — the sequential "what happens" narrative — were
+both the least-attended by the model and the most hallucination-prone. Declarative
+sections were more reliable.
+
+Map that onto your schema. `reproduction` is machine-captured — safe, already correct
+by design. `why` is free-text, model-authored, procedural, and currently checked by
+nothing. `policyViolations()` validates that a verdict agrees with an exit code; it
+never checks that `why`'s claimed mechanism is consistent with the `stack` and `covered`
+evidence already sitting in the same case file.
+
+Add a cheap consistency check at the `write_case.mjs` boundary: does `why` reference a
+file:line that appears in `stack` or `covered`? Does it name a function that's actually
+in scope? This is pattern-matching, not semantic understanding — it will not catch a
+plausible-but-wrong causal story, only a causal story that isn't even talking about the
+evidence in front of it. Cheap, mechanical, and it closes the one schema field the
+literature specifically flags as the highest-hallucination-risk shape of content you're
+already storing.
+
+### Everything else in v2 (E1 bisect, E3 spectrum, E4 shrink-parked, the deletions, the
+
+14-day order) stands unchanged. This document adds to it; it does not replace it.
+
+---
+
+## 2. How you confirm this thing works — three tiers, do not conflate them
+
+This is the part you're actually asking, so be precise about it, because the easy
+mistake is declaring victory on the cheap tier and never running the expensive one.
+
+### Tier 0 — mechanical self-test (you already mostly have this)
+
+`npm test`, the guards, the schema validation, the refusal tests. This proves the
+_software_ does what it claims to do at the code level: a misspelled field is rejected,
+`--control` gates correctly, ids can't escape the store directory. **This tells you
+nothing about whether the tool finds correct causes.** It cannot — it's a regression
+net written by the thing it tests, and §11 of `architecture.md` already documents that
+this exact class of test suite missed every real defect the tool has ever caught in the
+wild (5 defects, 0 caught by the self-authored corpus). Keep running it. Never cite it
+as evidence the product works.
+
+### Tier 1 — a mutation-seeded canary, build this week, run nightly
+
+You don't have to wait for a curated bug corpus to get a continuous signal. Mutation
+testing gives you an infinite supply of synthetic bugs with **exact, unambiguous ground
+truth**: mutate a line (invert a conditional, flip a comparison, drop a null check),
+and the mutated line _is_ the root cause, by construction, the moment a test starts
+failing.
 
 ```
-$ ducktective check --claim "candidate.py:411 returns None when cache is cold" \
-                    --repro "pytest tests/test_cache.py::test_cold -x"
-
-  reproduces        ✓  exit 1, 3 in-repo frames
-  regression        ✓  first bad commit a91f30c  "cache: short-circuit empty keys"  (8 steps)
-  claim ∈ commit    ✓  a91f30c touches candidate.py:404-418
-  check discriminates ✓ neutering :411 flips the check (probe)
-  control           ✓  passes on HEAD~1
-  prediction        ✓  predicted fail, exit 1
-  survives re-run   ✓
-  ─────────────────────────────────────────────
-  GRADE: A   (6/6 earned, 0 asserted)   case DT-260915-c31aa9
+evals/canary.mjs:
+  1. Run mutation testing (mutmut for Python targets, a small custom AST mutator
+     for JS/TS — Stryker's mutant-generation logic is a fine model to copy) against
+     a handful of real repos you already have on disk (this repo, floorplanner, vitruva).
+  2. For each mutant that a test catches ("killed"), you now have a (file, line,
+     failing command) triple with known ground truth.
+  3. Feed reproduce.mjs the failing command, let the spine run to a verdict.
+  4. Score: did candidates[0].location match the mutated line? Did the probe flip
+     correctly? Did an "equivalent mutant" (killed by nothing) correctly produce
+     zero candidates rather than a hallucinated one?
+  5. Emit one row per mutant to a JSONL log. Run this in CI, nightly or per-PR.
 ```
 
-Everything in that box is already built or is a weekend away. Nothing in it requires
-anyone to change how they debug. The case file stops being a compliance artifact and
-becomes the thing people actually want: **a receipt they can paste into a PR.**
+**Say the limit out loud, because it's real and well known in the mutation-testing
+literature:** mutants are a systematically easier and differently-shaped target than
+real faults. A single-token AST mutation is not a missing null check written by a human
+under deadline pressure, and tools have been shown to over-fit to mutant-shaped bugs
+before. Treat Tier 1 as: (a) a regression alarm — if cause-hit@1 on the canary drops
+between Tuesday and Wednesday, something in ranking broke, and you find out same-day
+instead of at the next benchmark run six weeks later; (b) a cheap way to catch gross
+breakage in the probe and the blind checker before they ever see a real bug. **Do not
+report canary numbers as evidence the product works on real bugs.** That claim requires
+Tier 2, and only Tier 2.
 
-Keep the name. Change the tagline. It is not "a detective." It is **receipts for root
-causes.**
+### Tier 2 — the paired benchmark, unchanged from v2, now with two more columns
+
+Same corpus plan as v2: ~200 instances from BugsInPy (reproducibility caveat noted
+there — expect real-world attrition, budget triage time), HaPy-Bug's line-level
+annotations to keep grading honest, SWE-bench Verified as a secondary check, a small
+freshly-mined GitBug-Actions slice as the one arm immune to memorization. Same arms
+(bare agent vs. agent+ducktective, same model, same budget). Same primary metric —
+**C2, false-confirm rate**: did the tool assert a specific cause that misses every gold
+hunk. Add two columns this round:
+
+| id     | metric                                  | what it isolates                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------ | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **C8** | blind-checker overturn rate             | of verdicts that would have shipped `confirmed` under v2's same-process probe, what fraction does the E5 blind re-derivation downgrade? If this is near zero, the blind separation bought nothing over the cheaper same-process version — cut E2's added cost and say so. If it's material (the AnyPoC numbers suggest it will be), that's your strongest single number: it is the exact, direct, quantified size of the reward-hacking problem this pitch exists to solve. |
+| **C9** | why/evidence consistency violation rate | how often does E5's cheap pattern-match catch a `why` field that isn't even talking about the evidence in its own case file? A non-trivial rate here is direct confirmation of the hallucination paper's finding applied to your own schema, not a borrowed statistic.                                                                                                                                                                                                      |
+
+### The rule that ties the tiers together
+
+Tier 0 failing means the software is broken — fix it, it says nothing about the product.
+Tier 1 failing means something regressed since last week — fix it, it still says
+nothing about the product beyond "didn't get worse." **Only Tier 2, run to completion,
+against a corpus you didn't author, answers "does this tool work."** Everything in this
+document that looks like progress before Tier 2 completes — the canary going green, the
+guards passing, a clean CI run — is necessary and proves nothing. Say this to yourself
+before you're tempted to ship on the strength of a green canary; the whole point of §16's
+original verdict was that a green suite has already once told you the tool was fine when
+it wasn't.
 
 ---
 
-## 3. Build these four things, in this order
+## 3. Why you might still be fooling yourself even after building all of this
 
-### E1 — `bisect.mjs` (highest expected value in the whole project)
+Be honest about the residual risk, because the fixes above are not a free lunch and the
+source material says so directly.
 
-`git bisect run` is the strongest automatic root-cause tool ever built, it is sitting on
-every user's machine, and **it does not appear anywhere in your architecture.** For any
-regression with a reproducing command it returns a commit — a fact, not an opinion,
-obtained in O(log n) runs.
-
-```
-git bisect start <bad> <good>
-git bisect run sh -c '<repro cmd>'      # 0 = good, 125 = skip, 1..127 = bad
-```
-
-- **Good ref discovery:** walk back tags, then commits, doubling (HEAD~8, ~16, ~32…)
-  until the repro passes; cap the walk and report `no-good-ref` honestly.
-- **Cost gate:** measure the repro once, refuse above `--budget` seconds, print the
-  estimate (`~11 runs × 4.2s ≈ 46s`) and require `--yes` like everything else.
-- **Flakiness:** `--repeat N`; any disagreement ⇒ `inconclusive`, never a commit.
-- **Env drift:** exit 125 on install/build failure ⇒ skip, and count skips in the case file.
-- **Output:** `first_bad_commit`, its touched hunks, and the _intersection_ of those hunks
-  with the model's claimed location. That intersection is a new, mechanical, high-signal
-  fact — and it feeds candidate seeding as well as grading.
-
-Honest limits, printed by the tool: regressions only (the test must have passed
-sometime), needs a buildable history, worthless for a bug that was always there. Say so
-in the output, not in a doc.
-
-### E2 — the probe (`--probe`): the missing third control
-
-Make `confirmed` mean something. Today: prediction matched, and the check isn't
-always-fail. Add: **the check's outcome is causally sensitive to the accused location.**
-
-Mechanically neuter the accused line and require the check result to flip:
-
-| Accused construct | Probe                                                                                 |
-| ----------------- | ------------------------------------------------------------------------------------- |
-| any statement     | inject `raise AssertionError("dt-probe")` / `throw new Error(...)` immediately before |
-| a `return expr`   | replace with a sentinel return                                                        |
-| a conditional     | invert it                                                                             |
-| a constant        | perturb it                                                                            |
-
-Run the check again. If the result **does not change**, the check does not depend on the
-suspect and the verdict is `inconclusive_vacuous`, not `confirmed`. Applied on a scratch
-worktree (`git worktree add`), never the user's tree; reverted always; refuses on a dirty
-tree.
-
-New lattice:
-
-```
-confirmed   ⇐ prediction matched ∧ control passes ∧ probe flips
-inconclusive_vacuous ⇐ probe does not flip           (NEW — most confident wrong answers land here)
-inconclusive ⇐ control fails ∨ timeout ∨ unrunnable
-falsified   ⇐ prediction contradicted
-```
-
-This is the one place where you have a real, defensible, novel claim. Existing debug
-tooling instruments and hypothesises; hypothesis-verification work in adjacent areas
-verifies by <cite index="17-1">intervention rather than logs alone</cite>. Nobody in
-the agent-skill space is refusing to write a verdict because the check didn't demonstrably
-depend on the accused line. Lead with it.
-
-### E3 — `spectrum.mjs` (Ochiai SBFL over the whole suite)
-
-You already collect coverage.py JSON and then throw away almost all of its power with a
-fail-only diff. Run the whole suite with per-test contexts (`pytest --cov-context=test`)
-and rank by Ochiai:
-
-```
-susp(s) = e_f / sqrt( (e_f + n_f) * (e_f + e_p) )
-```
-
-`e_f` = failing tests covering `s`, `n_f` = failing tests not covering it, `e_p` = passing
-tests covering it. This is an information source the agent genuinely does not have,
-because no agent is going to run your full suite with context tracking on its own.
-
-Be honest about strength: it's a **prior for ranking**, never a verdict. Coverage is a
-poor proxy for fault relevance — one recent comparison found nearly
-<cite index="24-1">identical line and branch coverage between test sets with wildly different fault-detection rates</cite>.
-So: gate behind `--spectrum`, print the cost, merge into `seedCandidates` as one signal
-among frames and bisect hunks, and measure whether it moves cause-hit@1 on the benchmark
-(§4). If it doesn't, delete it — that's what the benchmark is for.
-
-### E4 — `shrink.mjs` (ddmin)
-
-Delta-debugging a failing input to a minimal reproducer. Real value when the repro has an
-input surface (a payload, a file, a parametrized case); no value for a plain failing unit
-test. **Park it** behind the benchmark: build it only if §4 shows a meaningful slice of
-instances where the repro carries an input.
-
-### Explicitly still not building
-
-Graph expansion, cold scan, metamorphic/oracle-free checks, multi-agent roles, embeddings,
-SQLite. §13's triggers stand. Note that E1+E3 are the honest replacement for what the
-graph was _for_ (information the model lacks) at a fraction of the cost.
+- **The blind checker isn't zero either.** Even with full structural separation, the
+  best-performing configuration in the one paper that measured it still produced some
+  invalid outputs, not none, and cost roughly 2–4× more than the naive version for the
+  privilege. If your C8 overturn rate comes back near-total — the blind checker
+  disagrees with almost everything — that's not success, that's evidence your candidate
+  generation is producing garbage upstream and the checker is just the first thing
+  honest enough to say so.
+- **A canary that's all green tells you the mutants are easy, not that the tool is
+  good.** If Tier 1 numbers look great and Tier 2 numbers don't, trust Tier 2. That gap
+  is itself informative — it's telling you exactly how mutant-shaped your candidate
+  ranking has become.
+- **Retrieval and indexing help — but only up to the depth you fund.** The paper that
+  showed retrieval-guided detection nearly doubling precision also showed it still
+  capped exploration depth for cost reasons, and missed cases specifically at the
+  boundary of that cap. E1/E3 will have the same shape of failure. Don't be surprised
+  when the eventual error analysis says "ran out of budget one hop short of the real
+  cause" — budget it for from day one rather than treating it as a bug when it shows up.
 
 ---
 
-## 4. Measurement: benchmark first, field study maybe never
+## 4. Delete / build order (updated)
 
-Replace §8.2's 10–15 hand-graded bugs with a replayable harness. Not because field
-evidence is bad, but because field evidence at n=3 with a self-grading author is not
-evidence, and because **you cannot tune a protocol on 2 samples** — every design choice
-above (does SBFL help? does bisect intersection help? does the probe cost more than it
-saves?) is unanswerable without a corpus you can re-run.
+Everything in v2's delete list and 14-day schedule stands. Insert two items:
 
-### Corpus
-
-| Source                 | Why                                                                                                                                                                                    | Caveat                                                                                                                                  |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| **BugsInPy**           | <cite index="23-1">493 real bugs across 17 Python projects, each with a failing test and a human ground-truth patch</cite>; Docker-based checkout/test/coverage harness already exists | <cite index="23-1">reproducibility decays — one audit three years on found only ~67% of expected results</cite>; budget time for triage |
-| **HaPy-Bug**           | <cite index="27-1">human line-level annotations over BugsInPy separating bug-fix lines from refactoring, docs and tests</cite>                                                         | smaller; use it to _clean_ the gold set                                                                                                 |
-| **SWE-bench Verified** | <cite index="6-1">500 human-validated instances from 12 Python repos, with established harnesses</cite>                                                                                | contamination is a live concern in 2026 — use as a secondary, report separately                                                         |
-| **fresh mined slice**  | <cite index="22-1">GitBug-Actions mines bug-fix pairs from GitHub Actions runs and exports a Docker image per bug</cite>                                                               | the only arm immune to memorization; ~30 instances is enough to sanity-check the others                                                 |
-
-Pick **~200 reproducible instances** total. Keep a held-out third you don't look at until
-the end.
-
-### Task definition (narrow on purpose)
-
-Given the repo at the buggy commit and the failing test command, output a **root-cause
-location (file + line span) and a one-line cause.** Not a patch. You are not competing
-with automated program repair; you are competing with _confidently wrong explanations_,
-which nobody else is measuring.
-
-### Arms — paired by construction, no human memory involved
-
-- **A (bare):** host agent, same model, same budget, no skill.
-- **B (protocol):** host agent + ducktective.
-- Both on identical containers, both fresh, run in either order — the contamination
-  problem M9 was built to dodge disappears, because neither arm is a person.
-
-### Metrics — all mechanical
-
-| id     | metric                 | definition                                                                              |
-| ------ | ---------------------- | --------------------------------------------------------------------------------------- |
-| **C1** | cause-hit@1 (hunk)     | claimed span intersects a gold bug-fix hunk (HaPy-annotated lines only)                 |
-| **C2** | **false-confirm rate** | emitted a `confirmed`/high-confidence cause that misses every gold hunk                 |
-| **C3** | abstention rate        | stopped or declared inconclusive rather than asserting                                  |
-| **C4** | token cost             | from the API response, per instance, per arm                                            |
-| **C5** | wall clock             | harness-measured                                                                        |
-| **C6** | bisect yield           | fraction where E1 returned a commit; of those, fraction whose hunks contain a gold hunk |
-| **C7** | probe kill rate        | fraction of otherwise-`confirmed` verdicts demoted to `inconclusive_vacuous`            |
-
-**C2 is the product.** The sentence you want to be able to say is: _"the bare agent
-asserts a wrong root cause in X% of cases; with ducktective it asserts a wrong root cause
-in Y%, at Z% more tokens."_ That sentence is worth a company. "It enforces discipline" is
-worth a blog post.
-
-C7 is your novelty receipt: it directly counts wrong confident answers that only this
-tool caught, with no human in the loop.
-
-Do **not** report file-level accuracy. It's saturated (D1); reporting it makes you look
-like you don't know the field.
-
-### Decision rule (replaces §9)
-
-Run the 200. Then:
-
-- **C2 drops by ≥10 points absolute, at ≤2× tokens** → you have a product. Ship, publish
-  the table, go find users.
-- **C2 drops <5 points, or cost >3×** → the protocol does not pay. Archive the protocol;
-  **keep `bisect.mjs` + the probe as a standalone `ducktective check`**, which stands on
-  its own merits regardless.
-- **C7 ≈ 0** → the probe finds nothing, which means the checks models write are already
-  discriminating, which means D2 was wrong and I owe you an apology. Delete the probe.
-
-Date it and put it in the README.
+| Day                              | Add                                                                                                                                                                                                                                   |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 4–5 (with the probe)             | Build E5's consistency check in the same commit as E2 — it's a few hours of regex/AST work against fields you already schema-validate, and it's free once `write_case.mjs`'s validation boundary is open for the probe work anyway.   |
+| 6 (before the benchmark harness) | Stand up `evals/canary.mjs` against this repo's own test suite first — cheapest possible mutant source, zero new infra — before pointing it at floorplanner or vitruva. Get one nightly CI run green before touching BugsInPy triage. |
 
 ---
 
-## 5. Delete this week
+## 5. What would make this wrong
 
-| Delete / freeze                                                                                              | Why                                                                                          |
-| ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `/workbench`, `/cases`, `/protocol` routes + the demo engine + `case-import.mjs` + `site-case-sync.test.mjs` | a marketing simulation of an unvalidated claim, with its own untested engine (§14 admits it) |
-| the plugin marketplace manifests + their guard                                                               | <cite index="6-1">unexercised</cite> distribution for a product with no demand signal        |
-| two of three installer targets                                                                               | keep `--dest`; add targets when someone asks                                                 |
-| `query_memory.mjs` from the spine                                                                            | keep the JSONL, park the feature (D5)                                                        |
-| `architecture.md` → regenerate at ~150 lines after the pivot                                                 | reference rot is not the problem when the reference is 4× the code                           |
-| the M1–M9 ledger's hand-transcribed columns                                                                  | §4 makes them mechanical or irrelevant                                                       |
+Same four conditions from v2, plus:
 
-Keep the site to exactly one page: what it does, the C1/C2 table once you have it, and
-`/skill`. Ship the honest numbers or ship nothing.
-
----
-
-## 6. Fourteen days
-
-| Day   | Do                                                                                                                                                                |
-| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | Find the real `.gitignore` writer (D6). Delete §5's row when you have the answer.                                                                                 |
-| 1     | Delete everything in §5. Repo should lose ≥40% of its files and 100% of its npm site deps.                                                                        |
-| 2–3   | `bisect.mjs`: good-ref walk, budget gate, `--repeat`, 125-skip, hunk intersection. Tests on a synthetic 40-commit repo with a known bad commit.                   |
-| 4–5   | The probe: scratch worktree, four neuter strategies, `inconclusive_vacuous`, schema + `policyViolations()` + refusal tests.                                       |
-| 6–8   | Benchmark harness: BugsInPy triage → ~150 reproducible instances, HaPy gold-set cleaning, arm A and arm B runners, C1–C7 emitted as JSONL.                        |
-| 9     | First full run, arm A only. This is your baseline, obtained without asking a human to remember anything.                                                          |
-| 10    | First full run, arm B.                                                                                                                                            |
-| 11    | Read the table. Apply §4's decision rule. Write the result down **before** deciding how you feel about it.                                                        |
-| 12–13 | `spectrum.mjs` only if C1 in arm B is materially below the field's ~81% recall@1 — i.e. only if ranking is actually your bottleneck.                              |
-| 14    | Publish: one page, one table, the corpus list, the harness. A reproducible table from a stranger's corpus is worth more than 15 field cases from your own laptop. |
-
-Note what is absent: no new docs, no site work, no packaging, no users-to-find-first.
-Users come after C2.
-
----
-
-## 7. What would make me wrong
-
-State these now so you can hold me to them:
-
-1. **If C7 ≈ 0**, D2 was overblown — the discrimination hole is theoretical and the
-   existing control is sufficient.
-2. **If bisect yield (C6) < 20%**, most real bugs in the corpus aren't regressions and E1
-   is a niche feature, not the spine.
-3. **If arm A's C2 is already low** (agents rarely assert wrong causes when a failing test
-   is present), the entire premise of the project is false and the correct action is to
-   archive with a good receipt — which, to be clear, would be a _successful_ outcome for
-   a research project and a much better use of six weeks than polishing a site.
-4. **If the corpus is too contaminated to trust** (arm A does suspiciously well on
-   SWE-bench and badly on the freshly-mined slice), the benchmark plan is compromised and
-   the field study comes back — but with the mechanical probe/bisect receipts making the
-   human grading much cheaper.
-
----
-
-## 8. The one-line version
-
-Stop making people follow a protocol; start handing them receipts. Get the receipts from
-`git bisect` and a mutation probe, not from prose discipline. Decide the project on 200
-benchmark bugs with mechanical ground truth, not on 3 bugs you graded yourself. And go
-find whatever edited your `.gitignore` — right now, that is the only confirmed bug in this
-repository that nobody has localised.
+5. **If C8 (blind-checker overturn rate) is near zero across the whole benchmark**, the
+   reward-hacking problem this document treats as central turns out not to be your
+   problem — maybe your existing `--control` gate already screens most of it out in
+   practice, even though it isn't designed to. That would be a genuinely interesting,
+   genuinely good result. It would also mean E2's added cost isn't earning its keep, and
+   the honest move is to cut it back down to v2's cheaper same-process version and spend
+   the saved budget on E1/E3 instead.

@@ -1,685 +1,1082 @@
 # Ducktective — Architecture
 
-**The single technical reference for this repository.** Distilled from
-[`ducktective-design.md`](ducktective-design.md) (the plan) and
-[`ref-work.md`](ref-work.md) (the landscape and the critique), and constrained to
-what is **actually in the code**. Anything here that is a decision rather than a
-fact says so; anything aspirational lives in the design doc, not here.
+Technical reference checked against commit `74206de` on **2026-09-21**.
+The plan is [ducktective-design.md](ducktective-design.md); the rationale and
+landscape are in [ref-work.md](ref-work.md); the objection this project was judged
+against is kept verbatim in [critique-2026-09-15.md](critique-2026-09-15.md); the
+forward plan and the strategy learned from sibling projects are in
+[implementation.md](implementation.md); a worked walkthrough is in [guide.md](guide.md)
+and a real investigation in [field-run-designer.md](field-run-designer.md). This file
+describes the implementation as it is, including the parts that are limits.
 
-Verified against `b576d1d`+worktree on 16 Sep 2026, after the pivot in
-[`ducktective-design.md`](ducktective-design.md) v2. Keep it true: when you change a
-tool or a status, update this file — `scripts/skill-single-source.test.mjs` fails if
-a shipped tool goes unmentioned here or in `SKILL.md`, which is the only realistic
-defence against reference rot.
+**Status:** two Agent Skills — the product (`skills/ducktective/SKILL.md`: one contract,
+one schema, four core programs and one composition entry point, all zero-dependency
+`.mjs`) and the instrument (`skills/ducktective-bench/SKILL.md`). No website, plugin
+manifest, server, database or model runtime. The comparative benchmark in design §4 is
+**built but not yet run**: the materialiser, the arm runner with its harness registry,
+the OpenCode adapter and the C1–C12 arithmetic exist and are tested with a stub agent,
+but there is no two-arm aggregate. One **field run** exists
+([field-run-designer.md](field-run-designer.md)): it identified a real bug and confirmed
+its fix on real data, which is one investigation, not a measured rate.
+`probe()` produces per-case mutation outcomes, not a benchmark score. Passing the
+regression suite proves the tools behave as described; it does **not** prove that
+Ducktective improves debugging.
 
-> **Status.** The instrument is built, green, and installed on a real box; the
-> **product claim is untested and the discovery half of the pitch is already dead**
-> (§16's verdict). Week 1 of the plan (gate, falsification, case file, store, memory)
-> and most of week 2 (packaging, installer, manifests, README) exist. The open item is
-> the one nobody can automate: 10–15 real bugs, each with a **bare baseline run first**
-> (live counts: `node evals/runlog.mjs --report`).
-
----
-
-## 1. Purpose
-
-Ducktective exists because coding agents produce confident, plausible, **wrong**
-root causes: they grep, read three files, declare victory, patch. It is the thin
-protocol layer above whatever host agent you already run, and it does exactly
-three things:
-
-1. **Forces reproduction** before any localisation or reasoning is allowed.
-2. **Finds the commit that broke it**, when it is a regression — the only step here
-   that produces information the host agent did not already have.
-3. **Forces an executable falsifying check** for every candidate hypothesis, runs
-   it, and refuses to believe it unless the check demonstrably depends on the line
-   being accused.
-4. **Emits a permanent, structured case file** into a per-repo store, so a human can
-   audit the investigation that just happened.
-
-It is a **contract plus four small programs** — `reproduce`, `bisect`, `run_check`,
-`write_case`. Not a runtime, not a daemon, not a
-model, not a fixer. It never edits your code.
-
-**Explicitly not** (design doc L137–144, upheld in code): no custom call graph or
-`DuckGraph`, no multi-hop A\* suspicion scoring, no multi-agent detective roles,
-no knowledge-graph server, no embeddings, no background scanning, no
-oracle-free/metamorphic mode, no leaderboard or "industrial" claims.
+**How to read this file.** Sections 1–3 are the shape and the runtime. Sections 4–8
+are one algorithm per program, in execution order. Section 9 is the data model and
+what each receipt does and does not prove; §10 the store; §11 verification and
+measurement; §12 the design-versus-shipped gap; §13 the invariants and the change
+protocol. Line anchors (`run_check.mjs:284`) point at the implementation.
 
 ---
 
-## 2. System at a glance
+## 1. The boundary: judgment versus mechanics
+
+Ducktective is split on one line. The host agent supplies everything that is a
+judgment: it interprets the symptom, decides what the bug is likely to be, and writes
+the check. The tools supply everything that can be made arithmetic: run the command,
+parse the evidence, search history, mutate a line, enforce the rules, persist the
+result. **No tool establishes that a hypothesis or its oracle is causally correct**;
+`run_check.mjs` only establishes that the check agreed with its prediction and that
+its outcome moved when the accused line was neutered. That gap is deliberate and
+documented per mechanism in §9.
 
 ```
-   user: "investigate this failing test"
-                      ┌────────────────────────────────────────────┐
-                      │  HOST AGENT (Claude Code, Codex, Cursor…)  │
-                      │  reads the contract, decides, writes the   │
-                      │  hypothesis — never the verdict            │
-                      └───────┬────────────────────────────────────┘
-                              │ shells out, node, zero deps
-   ┌──────────────────────────▼──────────────────────────────────────────────┐
-   │ reproduce.mjs → bisect.mjs → run_check.mjs → write_case.mjs             │
-   │   (gate)        (a commit,    (oracle +      (store +                   │
-   │                  if it is a    probe)         enforcement)              │
-   │                  regression)                                            │
-   └───────────┬─────────────────────────────────────────────┬──────────────┘
-               │ subprocess via the user's shell             │ append/update
-        ┌──────▼───────────────────┐   ┌─────────────────────▼────────────────┐
-        │ the user's test runner    │   │ <repo>/.ducktective/                │
-        │ pytest · unittest · node  │   │   cases.jsonl  (machine, 1 per case)│
-        │ · tsc · plain script      │   │   cases/<id>.md (human, 30 s)       │
-        └───────────────────────────┘   └─────────────────────┬───────────────┘
-                                                               │ read by a human
-   ┌───────────────────────────────────────┐   ┌──────────────▼───────────────┐
-   │ evals/ corpus + run log → metrics     │   │ SKILL.md, served by the      │
-   │ scripts/ guards pin docs to code      │   │ installer, copied by hand    │
-   └───────────────────────────────────────┘   └──────────────────────────────┘
+skills/ducktective/
+  SKILL.md                   single source of the ducktective contract
+  case-file.schema.json      strict case-file shape (additionalProperties:false)
+  scripts/
+    reproduce.mjs            reproduction gate and candidate seeding
+    bisect.mjs               regression boundary search (the one tool that adds facts)
+    run_check.mjs            check, control, mutation probe and verification
+    write_case.mjs           schema/policy enforcement and persistence
+    check.mjs                composition entry point for an existing claim
+    lib/
+      exec.mjs               shell execution, bounded output, process-tree kill, childEnv
+      case-file.mjs          schema validator, policy rules, store, Markdown mirror
+      verdict-policy.mjs     the shared verdict rule, receipts, reportable gate, cause identity
+      args.mjs               shared numeric-flag validation
+  bin/install.mjs            installer (not shipped into the destination)
+  tests/                     executable regression tests (not shipped)
+skills/ducktective-bench/
+  SKILL.md                   the instrument: how to run the benchmark
+bench/                       benchmark engine
+  sources.mjs                declared sources, input validation, instance schema
+  agents.mjs                 harness registry: detection + command construction
+  materialize.mjs            clone/worktree a repo at its commit; verify the premise
+  mine.mjs                   mine a candidate instance from one fix commit
+  run.mjs                    run each arm, score the claim, emit C1–C12
+  opencode-agent.mjs         OpenCode v2 adapter (prompt + claim)
+  report.mjs                 C1–C12 arithmetic
+  stub-agent.mjs             model-free agent for tests and CI
+corpus/                      verified real instances (designer repo), see corpus/README.md
+evals/cases/                 self-authored behaviour corpus, one directory per case
+evals/canary.mjs             Tier-1 mutation canary (ranking regression alarm)
+evals/canary/target/         the mutated fixture
+  ../RUNLOG.jsonl            investigation ledger, not a paired benchmark
+scripts/                     repo guards (single source, retired tools, run log)
+docs/                        design, critique, guide, plan, field run, and this reference
+assets/                      hero image
+graphify-out/                generated local navigation data (gitignored)
 ```
 
-There is **no server anywhere** and, since 16 Sep, **no website**: the skill is the
-product, and a static SPA that re-implemented the spine in the browser to demo an
-unvalidated claim was deleted (§9). `SKILL.md` is served as a file by the installer
-and read as text by whoever wants it.
+`query_memory.mjs` and the site's duplicate engine are retired. The store remains;
+there is no automatic case-similarity ranking and no `spectrum.mjs`. `graphify-out/`
+is generated local navigation data, not part of the shipped skill; Prettier and git
+exclude it.
 
-## 3. Repository anatomy
+---
 
-```
-skills/ducktective/          THE PRODUCT — one folder, installable
-  SKILL.md                   hard rules, tool commands, case-file template
-  case-file.schema.json      the data contract (§6); JSON Schema subset
-  scripts/                   the four tools (§4–§7); lib/ holds shared internals
-  bin/install.mjs            clone install, one target + --dest
-  tests/                     tool tests + a Python and a node:test fixture
-docs/                        the plan (ducktective-design.md), the landscape
-                             critique (ref-work.md), this file, and the external
-                             critique that was answered (critique-2026-09-15.md)
-evals/                       behaviour corpus, run log, results, runner
-scripts/                     repo guards: single source, manifests, run-log
-.github/workflows/           eval.yml (corpus on real pytest + coverage.py)
-ref/                         gitignored research clones — never imported from
-.ducktective/                gitignored: this repo is the workshop, not the patient
-```
+## 2. Component map
 
-`skills/ducktective/SKILL.md` is the **only copy of the skill** in the repo, and the
-installer ships `SKILL.md`, the schema and `scripts/` — excluding `tests/` and
-`bin/`. There is no site workspace to keep in sync, so the single-source guard
-watches the one thing it can still see: a tool that ships without being documented
-in `SKILL.md` or in this file fails the build.
-
-## 4. The spine
-
-`check.mjs` is the composition entry point for a claim already made: reproduction,
-optional history search, check/probe, re-run, and storage. It writes its human table
-to stderr and machine result to stdout. The letter is an **evidence-completeness
-score, not causal confidence**. A contradicted prediction or failed verification
-cannot be averaged into a positive grade; a bisect hunk miss alone is not proof
-of a wrong cause. Tool-documentation guards match exact filename tokens, so
-`run_check.mjs` cannot accidentally document `check.mjs`.
-
-```
- invoke ─▶ 1 REPRODUCE ──exit 1──▶ does_not_reproduce → write_case → STOP
-                │ exit 0
-                ▼
-           2 SEED CANDIDATES  (≤5, nearest fault first)
-                │   bisect.mjs, when a green ancestor exists: the blamed commit and
-                │   its hunks become a candidate, and `claim_in_commit` grades any
-                │   claim already made against them
-                ▼
-           3 FALSIFY one candidate ──falsified──┐
-                │ confirmed                    │ (≤ depth ceiling, needs --escalate
-                ▼                              ▼  to go past an inconclusive lead)
-           4 CASE FILE  ◀──────────────────────┘
-                ▼
-           5 MEMORY  (rap sheet next time; nothing may skip the gate)
+```mermaid
+flowchart TD
+  HOST["Host agent<br/>reads symptom, writes hypothesis and check"]
+  CHECK["check.mjs<br/>composition + evidence grade"]
+  REPRO["reproduce.mjs<br/>the gate"]
+  BISECT["bisect.mjs<br/>history boundary search"]
+  RUN["run_check.mjs<br/>oracle + control + probe + verify"]
+  WRITE["write_case.mjs<br/>schema and policy enforcement"]
+  LIB["lib/<br/>exec.mjs · case-file.mjs · args.mjs"]
+  STORE[".ducktective/<br/>cases.jsonl + cases/ID.md"]
+  GIT["user's repo + scratch git worktree"]
+  HOST -->|"claim, repro command"| CHECK
+  CHECK --> REPRO
+  REPRO --> BISECT
+  REPRO --> RUN
+  RUN --> GIT
+  RUN --> WRITE
+  WRITE --> STORE
+  LIB -.-> REPRO
+  LIB -.-> BISECT
+  LIB -.-> RUN
+  LIB -.-> WRITE
 ```
 
-| Step       | What is guaranteed, not asked for                                                                                                                                             |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Reproduce  | The command runs through the user's shell; exit 0 ⇒ `does_not_reproduce` **with zero candidates**; a failure with no in-repo evidence ⇒ `error`; exit 1 is the hard stop (§5) |
-| Candidates | Ranked by parsed traceback order + fail-only coverage, capped at 5, dependency frames last, ids are file:line                                                                 |
-| Falsify    | Hypothesis required; the check is executed; verdict = arithmetic; `--control` must pass or nothing is concluded                                                               |
-| Case file  | Schema + policy validated at the store boundary; Markdown mirror generated from the same object                                                                               |
-| Memory     | Append-mostly JSONL keyed by id; overlap ranking shared with the site's demo                                                                                                  |
-
-### Exit-code contract (the host's API)
-
-| Tool               | 0                                        | 1                                           | 2                                           | 3                          |
-| ------------------ | ---------------------------------------- | ------------------------------------------- | ------------------------------------------- | -------------------------- |
-| `reproduce.mjs`    | reproduced — continue                    | does not reproduce — **stop**               | harness error / command never ran / timeout | —                          |
-| `run_check.mjs`    | verdict recorded                         | refused (state, sequence, depth, unsafe id) | inconclusive / bad args                     | dry run, nothing executed  |
-| `query_memory.mjs` | printed (an empty store is a normal day) | —                                           | bad args                                    | —                          |
-| `write_case.mjs`   | stored                                   | refused: the case breaks a rule             | invalid JSON / harness                      | —                          |
-| `bisect.mjs`       | first bad commit found                   | refused: dirty tree, budget exceeded, bad   | no good ancestor, flaky repro, no candidate | dry run: the plan, nothing |
-|                    |                                          | args                                        |                                             | moved                      |
-| `bin/install.mjs`  | installed (or planned)                   | refused: you edited a file                  | bad args / download failed                  | —                          |
-
-stdout is always machine-parseable (JSON or a usage line); prose goes to stderr.
+The same tools run standalone under `SKILL.md`; `check.mjs` is a convenience that
+shells out to them and grades the result. `check.mjs` invents no evidence of its own:
+every row it prints is a fact one of the other tools produced, and a row nobody
+attempted is `n/a` rather than a silent pass.
 
 ---
 
-## 5. Where the discipline actually lives
+## 3. Runtime model: execution, approval, exit codes
 
-The premise of the whole design: an agent under pressure to answer reads prose as a
-suggestion. So every rule that matters is a **type error at a boundary**, not an
-instruction.
+### 3.1 `lib/exec.mjs` — one correct way to run someone else's command
 
-**Who decides what.** The host model owns every judgement call; the tools own every verdict.
-The model reads the failing run, writes the one-line hypothesis, picks the smallest disproof,
-and declares what it expects to happen. It is never the thing that grades itself:
+`run(command, { cwd, timeout, maxBytes })` is shared by `reproduce.mjs`,
+`bisect.mjs`, `run_check.mjs` and `check.mjs` (via child processes). Its behaviour is
+a list of bugs that already happened once:
 
-| Decision                                                                          | Owner                                   | Mechanism                                                                                  |
-| --------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------ |
-| What the symptom means; the hypothesis; which check disproves it; what to predict | host model                              | prose in the draft                                                                         |
-| Did it reproduce, and where to look first                                         | `reproduce.mjs`                         | exit code + the evidence rule; candidates seeded in frame/coverage order (§8)              |
-| `confirmed` / `falsified` / `inconclusive`                                        | `run_check.mjs classify()`              | `(predicted === "pass") === (exit === 0)`, after the timeout / unrunnable / control checks |
-| May the next candidate be tested                                                  | `run_check.mjs blockers()`              | an earlier `pending`, `inconclusive` or `confirmed` lead keeps it shut                     |
-| Does the claim still stand                                                        | `run_check.mjs --verify`                | re-runs that candidate's own oracle, writes `verified_verdict` only                        |
-| May any of this be stored                                                         | `write_case.mjs` → `policyViolations()` | schema + rules 1–8 as refusals                                                             |
+1. **Shell, always.** `--cmd` is a human string such as
+   `python -m pytest -q tests/x.py | tail -20`. On Windows a bare `vite` or `pytest`
+   has no `.exe` for libuv to find, so `shell: true` is load-bearing.
+2. **Bounded capture.** Output accumulates as `Buffer`s against a hard ceiling of
+   `max(maxBytes × 20, 1 MB)` per stream; past that the stream is dropped with a note.
+   Decoding happens once at the end, so a multibyte character split across a chunk
+   boundary is not mangled.
+3. **The whole tree dies on timeout.** With a shell the direct child is
+   `cmd.exe`/`sh`; killing it alone orphans a hung `pytest`/`node` grandchild. POSIX
+   runs the child detached and signals the process group; Windows uses
+   `taskkill /PID <pid> /T /F`.
+4. **Nested-runner plumbing is removed.** `NODE_TEST_*` variables are deleted from the
+   child environment, because a `node --test` that inherits them exits 0 and prints
+   nothing, which the gate would read as "does not reproduce".
+5. **Signalled means signal.** `code` is `null` when the process was signalled, so a
+   timeout can never be mistaken for a passing check.
 
-The model's output is a _prediction_; the store accepts only a verdict that agrees with the
-exit code that prediction implies. A confident wrong answer is not merely discouraged here —
-it is unrepresentable in `cases.jsonl`.
+`wasNotRunnable(result)` answers "could the thing you asked me to run even run?":
+true for a spawn error, exit `127`/`9009`, or the "is not recognized / not found"
+messages a shell prints instead of raising. This distinction is what stops a typo'd
+path from being filed as a reproduction.
 
-| Rule (SKILL.md)                                              | Enforcement                                                                                                                                                                                                             | Where                                                       |
-| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| 1–2. No reasoning without reproduction                       | a non-reproducing case must carry **zero** candidates; a stopped draft is writable, a speculated one is not                                                                                                             | `policyViolations()`                                        |
-| 3. Never more than five candidates                           | `"maxItems": 5`; `--max-candidates` clamps loudly                                                                                                                                                                       | schema + `reproduce.mjs`                                    |
-| 4. A verdict is an executed oracle                           | verdict requires `predicted` **and** numeric `check_exit_code`; a verdict contradicting its own exit code is refused ("predicted pass, exit 1 ⇒ falsified")                                                             | `policyViolations()` + `classify()`                         |
-| 5. A check that fails everywhere proves nothing              | `--control` that exits non-zero ⇒ `inconclusive`, and a `confirmed` beside a failed control is refused                                                                                                                  | `run_check.mjs`                                             |
-| 5. A check that never touched the line proves nothing either | `--probe` comments the accused line out on a scratch worktree and re-runs the check; no change ⇒ `inconclusive_vacuous`, and `write_case` refuses any `confirmed` carrying neither a passed control nor a flipped probe | `run_check.mjs probe()`, `classify()`, `policyViolations()` |
-| 6. Never confirm in prose                                    | hand-typed verdicts have no provenance to cite ⇒ refusal                                                                                                                                                                | schema + policy                                             |
-| 7. No patch before a confirmed cause                         | `suggested_patch` requires `status: confirmed`; `high`/`medium` confidence too                                                                                                                                          | `policyViolations()`                                        |
-| Speed control                                                | a `pending` **or** `inconclusive` **or** `confirmed` earlier lead blocks the next; `--escalate` overrides deliberately; `--depth 1` forbids escalation                                                                  | `blockers()`                                                |
-| Not a sandbox                                                | `--yes` or nothing, with the exact command printed first; no denylist (any `&&` defeats one)                                                                                                                            | `run_check.mjs` header                                      |
+### 3.2 Approval is per tool, not a global flag
 
-**The evidence rule.** "Reproduced" is not inferred from vocabulary. A non-zero
-exit is a reproduction only if the run left evidence _inside this repo_: a
-traceback frame or a fail-only coverage line. This rule exists because a real
-third-party repo (`ref/scientific-agent-skills`) exited 2 with
-`ERROR: cannot collect 105 skills in one process` and matched no known error
-string — it was filed as a reproduced bug. `RUNNER_MISUSE` now only chooses the
-wording of the note.
+The non-negotiable is _nothing executes without `--yes`_, but "execution" means
+different things in different tools. The honest rule is the table, not the slogan:
 
-**Pseudo-locations are not files.** `[eval]`, `<string>`, `<stdin>` have no
-separator and no drive, so "not absolute" read them as in-repo evidence;
-`isLocalFile()` rejects them. Path classification is deliberately done with pure
-string helpers (`baseName`, `isAbsoluteLike`) rather than `path.isAbsolute`/
-`path.basename`, which answer per-OS — that bug shipped green on Windows and red
-on CI.
+| Tool              | Runs a model-authored command | Writes to disk       | Approval required                                  |
+| ----------------- | ----------------------------- | -------------------- | -------------------------------------------------- |
+| `reproduce.mjs`   | yes (`--cmd`)                 | draft JSON (`--out`) | none — running the repro is the gate's job         |
+| `bisect.mjs`      | yes, many times               | optional `--out`     | `--yes`; otherwise exits 3 having run nothing      |
+| `run_check.mjs`   | yes (check + control)         | draft, temp script   | `--yes`; otherwise exits 3 having run nothing      |
+| `check.mjs`       | yes, via the tools above      | draft + result JSON  | `--yes`; otherwise prints the plan and exits 3     |
+| `write_case.mjs`  | no                            | the store            | none; it is the enforcement point, not an executor |
+| `bin/install.mjs` | no                            | the destination      | none; `--dry-run` to only plan                     |
 
-**Vendored code is not the project's code.** The first real run — a bug in
-`WebPointCloud`, a repo this project did not write — filled all five candidate
-slots with `.venv/Lib/site-packages/_pytest/*` and never named the failing file,
-which made "dependency frames last" false for the dependencies a repo keeps in
-its own tree. `VENDORED` (`.venv`, `venv`, `node_modules`, `site-packages`,
-`.tox`, `vendor`, `__pycache__`) is now folded into `isLocalFile()`, so those
-paths neither lead nor count as evidence — in the traceback frames **and** in the
-coverage sites. Because a warning escalated to an error reports its origin inside
-`_pytest/python.py`, the run would then have read as "nothing landed in this
-repo": `TEST_NODEID` (`path.py::Class::test`, which pytest prints itself) is the
-second form of in-repo evidence, and it is what keeps that reproduction a
-reproduction.
+Multiline dry runs do not materialise a script. `check.mjs` prints
+`approve_with: --yes` on **stdout**, never stderr, so an agent scraping the printed
+plan cannot find the approval flag already attached to it.
 
-**Ids are filenames.** `.ducktective/cases/<id>.md` and
-`ducktective-check-<id>-<rank>.<ext>` are built from a **model-authored** draft, so
-`^DT-[A-Za-z0-9][A-Za-z0-9-]{0,31}$` is a containment guard: `^DT-` let
-`DT-../../pwned` write outside `cases/` and `DT-../../../tmp/evil` write — and then
-execute — outside the repo. `writeCase()` re-checks it so an unvalidated caller
-still can't aim a write.
+**This is not a sandbox.** An approved command runs through the user's shell with the
+user's privileges and may modify files. A denylist is theatre — any `&&` or backtick
+defeats one, and a defeated denylist reads as safety — so the mitigation is that the
+human reads the exact command first.
+
+### 3.3 Exit codes
+
+| Tool              | Exit codes                                                                         |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| `reproduce.mjs`   | 0 reproduced; 1 does not reproduce; 2 harness error                                |
+| `bisect.mjs`      | 0 boundary found; 1 refused/error; 2 inconclusive; 3 dry run                       |
+| `run_check.mjs`   | 0 recorded verdict; 1 refused; 2 inconclusive/error/failed verification; 3 dry run |
+| `write_case.mjs`  | 0 stored; 1 policy/schema refusal; 2 harness error                                 |
+| `check.mjs`       | 0 report produced, including negative grades; 3 dry run; uncaught errors fail      |
+| `bin/install.mjs` | 0 installed/planned; 1 overwrite refused; 2 error                                  |
+
+A non-zero exit is never "the claim is wrong" except where it is explicitly
+documented (`reproduce` exit 1, `bisect` exit 2).
 
 ---
 
-## 6. Data contract
+## 4. `reproduce.mjs` — the reproduction gate
 
-`case-file.schema.json` is canonical. Case fields:
+`reproduce.mjs` is the hard gate. Nothing downstream may reason about the bug until it
+exits 0. It runs the exact failing command, captures stdout and stderr, classifies the
+outcome from _evidence_, seeds candidate locations, and emits a case-file draft on
+stdout (and to `--out`).
+
+Flags: `--cmd` (required), `--cwd`, `--symptom`, `--coverage`, `--baseline`,
+`--timeout` (120 s), `--max-bytes` (4000/stream), `--max-candidates` (1–5, default 5,
+clamped with a warning), `--out`.
+
+### 4.1 Outcome classification
+
+The order of the branches _is_ the algorithm; several would be ambiguous if reordered.
+
+```mermaid
+flowchart TD
+  S["run --cmd via lib/exec.mjs"] --> A{"spawn error?"}
+  A -->|yes| E1["error — harness could not start it"]
+  A -->|no| B{"timed out?"}
+  B -->|yes| E2["error — a hang is not a reproduction"]
+  B -->|no| C{"no in-repo frame AND command not runnable?"}
+  C -->|yes| E3["error — a missing binary is not the symptom"]
+  C -->|no| D{"exit code 0?"}
+  D -->|yes| N["does_not_reproduce — STOP, zero candidates"]
+  D -->|no| F{"no in-repo frame AND no fail-only coverage AND<br/>no pytest node id?"}
+  F -->|yes| E4["error — failed, but nothing in this repo failed"]
+  F -->|no| G["reproduced — seed candidates"]
+```
+
+Notes that matter:
+
+- A non-zero exit is only a reproduction if something **in this repo** failed. Usage
+  errors, uncollectable test trees and dependency-only crashes all exit non-zero; none
+  is a reproduced symptom. The old design decided this by matching error strings, and
+  a real repo whose message matched nothing was filed as `reproduced` with zero
+  candidates. `RUNNER_MISUSE` now only chooses the _wording_ of the note
+  (`reproduce.mjs:82`).
+- `TEST_NODEID` recognises a pytest summary line naming this repo's test
+  (`path.py::Class::test`), which can reproduce a failure whose traceback lives inside
+  `_pytest`.
+- `local` means frames for which `isLocalFile()` is true (below); `localSites` means
+  coverage sites marked `inside`.
+- `status` is derived from the outcome, not the reverse: `reproduced → open`,
+  `error → unverified`, `does_not_reproduce`. `error` describes the reproduction, not
+  a verdict, so the only honest status is `unverified`.
+- A non-reproducing or errored case carries **zero candidates** (`reproduce.mjs:510`),
+  so the draft cannot tempt the next step.
+
+### 4.2 Frame parsing
+
+Test runners disagree about the stream (pytest/unittest write tracebacks to stderr,
+`node --test` reports failures on stdout), so both are concatenated before parsing.
+Four grammars are recognised (`reproduce.mjs:44`–`69`):
+
+| Grammar       | Pattern                                    | Used by                              |
+| ------------- | ------------------------------------------ | ------------------------------------ |
+| Python frame  | `File "src/user.py", line 41, in get_user` | Python tracebacks                    |
+| V8 frame      | `at getUser (C:/p/src/auth.ts:41:12)`      | Node stack traces                    |
+| Location line | `test_money.py:5: AssertionError`          | pytest (no `File "…"` for an assert) |
+| Diagnostic    | `src/app.test.ts(64,52): error TS2353: …`  | `tsc`, `vue-tsc`, webpack, ESLint    |
+
+Ordering is **nearest-fault first**, and it is derived from the syntax that matched,
+not from the detected runner:
+
+- Python prints the **outermost** call first, so the throwing frame is last → the
+  Python list is reversed.
+- V8 prints the throw site **first** → kept in order.
+- Location and diagnostic lines already name the failing spot → kept in order.
+
+`parseFrames()` returns `[...py.reverse(), ...loc, ...js]` (`reproduce.mjs:294`).
+`node:` frames are dropped as runtime plumbing, and paths are repo-relative where they
+are inside `--cwd` (`repoRelative`), so `location` survives a different checkout.
+
+### 4.3 What counts as an in-repo file
+
+`isLocalFile()` is a pure string test, and every clause exists because of a real
+misclassification:
+
+- not absolute-like — Windows drive (`C:\`), leading `/`, or UNC `\\`;
+- not `../…` — outside the checkout;
+- not a pseudo-location — `<string>`, `<stdin>`, `[eval]`: "not absolute" alone used to
+  call these in-repo evidence;
+- not vendored — `node_modules`, `.venv`, `site-packages`, `__pycache__`, `vendor`,
+  `.tox`, `.nox`.
+
+The path helpers (`baseName`, `isAbsoluteLike`) are hand-rolled over both separators
+so the same traceback classifies identically on Windows and Linux
+(`reproduce.mjs:191`–`227`). A case file is meant to outlive the machine that wrote it.
+
+### 4.4 Candidate seeding
+
+`seedCandidates(frames, sites, maxCandidates, assertion)` (`reproduce.mjs:405`) builds a
+map keyed by `file:line` and emits at most `maxCandidates` leads, ranked:
+
+```mermaid
+flowchart LR
+  A["in-repo stack frames<br/>nearest fault first"] --> M["Map keyed file:line"]
+  B["fail-only coverage sites<br/>executed by failing run, by no passing run"] --> M
+  C["out-of-repo frames<br/>dependencies and runtime"] --> M
+  M --> R["rank 1..N, capped at 5"]
+  M -.->|"same site in stack and coverage"| X["source = stack+coverage"]
+```
+
+The precedence rule is a policy: local leads first, dependency/runtime frames last
+("a traceback that only touches site-packages is a clue about the environment, not the
+bug"). A site seen in both the traceback and fail-only coverage is merged to
+`stack+coverage`, and the generated `why` says which evidence produced the lead. A
+candidate is an empty hypothesis plus `verdict: "pending"` — the tool does not
+hypothesise.
+
+Coverage has **two roles, kept apart** (`reproduce.mjs:456`):
+
+- `reproduction.covered` records what the failing run executed, with or without a
+  baseline — an inventory a human may want.
+- Only **fail-only** sites, those a passing run never touched, become candidates. A
+  baseline-less inventory is not a localization signal, so it is recorded but never
+  ranked. Warning-and-ranking at the same time is the illogical state that was removed.
+- `--baseline` is what turns coverage into a signal; without it the gate adds a note
+  naming exactly how to collect one (`coverageHint`, only when the command's first
+  token is a Python interpreter that can `import coverage`).
+
+### 4.5 Draft and exit
+
+The draft is validated against `case-file.schema.json` before it leaves the process.
+A schema violation is reported to stderr but does not stop the output — the shape
+validator is the store's job to enforce; the gate's job is to record what it ran.
+`--out` creates parent directories (`mkdirSync recursive`), because failing there
+would have thrown away a reproduction that had already run. Exit is `0` reproduced,
+`2` error, `1` does not reproduce.
+
+---
+
+## 5. `bisect.mjs` — history boundary search
+
+This is the only tool that produces a fact the host agent did not already have. For any
+regression with a reproducing command, `git bisect`-style search names the commit that
+broke it in O(log n) runs, with no model in the loop. It runs in the **user's working
+tree**, because a scratch worktree would not have the untracked `.venv` / `node_modules`
+the repro needs.
+
+Flags: `--cmd` (required), `--good`, `--bad` (default `HEAD`), `--claim`, `--repo`,
+`--repeat` (default 1), `--budget` seconds (default 600), `--timeout`, `--out`, `--yes`.
+
+### 5.1 Preconditions and refusals
+
+Before anything runs, `bisect.mjs` refuses:
+
+- a directory that is not a git repository;
+- a repo already mid-bisect (`.git/BISECT_LOG` exists);
+- a tree with uncommitted changes. The single exemption is the untracked root
+  `.ducktective/` store, because the case files live there and are not code under test
+  (`bisect.mjs:203`).
+
+`restore` is captured first — the current branch, or the commit if `HEAD` was already
+detached — and a `finally` attempts to check it back out; restoration failure is
+reported with exit 1.
+
+### 5.2 The search
+
+```mermaid
+flowchart TD
+  A["probe --bad: run the repro once<br/>time the run"] --> B{"class?"}
+  B -->|"skip"| E1["exit 2: the command does not run here"]
+  B -->|"good"| E2["exit 2: nothing to bisect, reproduce it first"]
+  B -->|"bad"| C{"--good given?"}
+  C -->|yes| D["test it, require good"]
+  C -->|no| F["doubling walk: HEAD~1, ~2, ~4 … ~1024"]
+  F -->|"first good"| G["good ref found"]
+  F -->|"overshoot"| H["test the chain's oldest commit"]
+  H --> G
+  D --> G
+  G --> I{"estimated + discovery within budget?"}
+  I -->|no| E3["exit 1: refused, plan printed"]
+  I -->|yes| J["binary search over first-parent range"]
+  J --> K["first bad commit + touched hunks + claim_in_commit"]
+```
+
+**Grade function.** Each reproduction run is classified the way `git bisect run` wants
+it (`bisect.mjs:125`): timeout or exit `125` → `skip`; exit `0` → `good`; anything else
+→ `bad`. With `--repeat N`, disagreement across runs is `flaky`, never a commit.
+
+**Green-ref discovery (doubling).** With no `--good`, the tool walks `bad~1, ~2, ~4 …`
+up to 1024, resolving every ref to a SHA _before_ checking anything out — `HEAD~4` means
+a different commit once `HEAD` has moved, and a walk that re-anchors itself stops early
+and reports `no-good-ref` wrongly (`bisect.mjs:313`). When the grid overshoots history,
+the oldest first-parent commit is tested too, because it is the one candidate the grid
+may have skipped. This is a guess at the floor of the regression, not a search for the
+first green commit; the result says which ref it used.
+
+**Range and complexity.** The search space is the **first-parent** chain
+(`git rev-list --first-parent <bad>`), sliced between `good` and `bad`. Merges are not
+dropped: `--no-merges` leaves side-branch parents interleaved by date, which is not a
+history order and lets the search blame an innocent commit. `range[0]` is the bad tip;
+the virtual index `range.length` is `good`. On that array "is bad" is assumed monotone
+(newer bad, older good), which is exactly the assumption a fix/reintroduction history can
+violate.
 
 ```
-id · opened_at · symptom · reproduction · candidates[]
-confirmed_cause · leading_hypothesis · confidence · suggested_patch · status · notes
+chain (newest first):   [bad .. ] [range: commits strictly newer than good] [good .. root]
+range index:              0 ........ lo/boundary ........ hi ........ range.length == good
+search: binary, lo = last known bad, hi = first known good, ceil(log2 n) probes.
 ```
 
-- `status`: `open` (mid-flight, patching forbidden) · `confirmed` ·
-  `does_not_reproduce` · `exhausted` · `unverified`. A run that never executed is
-  `unverified` with the harness reason in `leading_hypothesis` — `error` describes
-  the reproduction, never the verdict.
-- `reproduction`: `command`, `outcome`, `exit_code`, `duration_ms`, `runner`,
-  `stdout`/`stderr` (head **and** tail kept — the exception is at the end),
-  `stack` (verbatim frame lines), `covered` (`{file,line}` fail-only sites).
-- `candidates[]`: `rank`, `location`, `why`, `hypothesis`, `check`, `verdict`,
-  `evidence` + the provenance chain `predicted`, `check_exit_code`, `control`,
-  `control_exit_code`, `verified_exit_code`, `verified_verdict`.
-- `additionalProperties: false` at every level, so a misspelled field is a
-  validation error rather than a value that silently reads as `undefined` in the
-  site and the rap sheet.
+**Pricing.** One measured run at `--bad` prices the whole walk:
+`steps × --repeat × measured_run_ms`, where
+`steps = max(1, ceil(log2(max(count, 2))) + 1)` and `count` is the number of commits
+between. The budget covers the whole wall clock the tool has spent, so discovery time
+already elapsed is included; the refusal reports both. The budget is **not a hard
+deadline** for subsequent commands — each run keeps its own `--timeout`.
 
-**Store:** `<repo>/.ducktective/cases.jsonl`, one line per case id, rewritten in
-place as verdicts arrive (design doc L112 as amended — strict append would pile up
-copies of every half-answer). Unparseable lines are preserved verbatim, never
-dropped by a rewrite. JSONL and Markdown are written through the same helper via
-temp-file + rename, so a crash cannot half-write either. `repoRoot()` walks to
-`.git` and **falls back to the starting directory**, never the filesystem root.
+**Termination.** An untestable midpoint (`skip`) stops the search conservatively with
+`bisected: false`, `skips` counted, and an interval ordered
+`[good boundary, bad boundary]` — it is never assumed green. A flaky midpoint aborts
+with `flaky: true`. The search is driven here rather than by `git bisect run`, because
+that would need a shell wrapper that differs per platform; this leaves no bisect state
+behind.
 
----
+### 5.3 Diff parsing and `claimInCommit`
 
-## 7. Execution layer (`scripts/lib/exec.mjs`)
+`parseTouched()` (`bisect.mjs:172`) reads `git show --format= -U0`:
 
-One place where the OS realities live, shared by `reproduce` and `run_check`. Every
-item below is a bug that already happened:
+- `+++ b/<path>` starts a file;
+- `@@ -a[,b] +c[,d] @@` records `[c, c+d-1]` (`d` defaults to 1, `d = 0` collapses to
+  `[c, c]`);
+- `a/dev/null` entries are dropped.
 
-- `shell: true`, one command string — `--cmd` is human input with pipes and `&&`,
-  and Windows will not resolve a `.cmd` shim otherwise. Never `spawn(exe, args,
-{shell:true})`: node concatenates instead of escaping, so
-  `-c "import coverage"` arrived as two words and every probe "failed".
-- **Tree kill**: `detached` + `kill(-pid)` on POSIX, `taskkill /T /F` on Windows.
-  Killing the shell alone left a hung `pytest` holding the port.
-- **`NODE_TEST_*` scrubbed** from the child env — a nested `node --test` that
-  inherits them exits 0 and prints nothing, which the gate read as "does not
-  reproduce".
-- **Bounded capture**: chunks accumulated as Buffers to a hard ceiling, decoded
-  once, then head+tail clipped. A 400 MB `pytest -s` used to OOM the harness and
-  per-chunk decoding split multibyte output.
-- **The repo's own interpreter.** A materialized multi-line python check runs
-  under `.venv/Scripts/python.exe` / `.venv/bin/python` (or `venv/`) when the repo
-  has one, because global `python` is the machine's and has none of its deps. On
-  that real run the global interpreter exited 1 with
-  `ModuleNotFoundError: No module named 'pytest'`, and the arithmetic filed the
-  hypothesis as **falsified** — a check that never tested anything, recorded as a
-  check that disproved it.
-- **Atomic writes** and **`exitCode`, never `process.exit()`** — stdout to a pipe is
-  async and can be truncated with the JSON half-written.
+`claimInCommit(claim, touched)` (`bisect.mjs:151`) turns `--claim "app.py:41 fn()"` into
+`{file, line}` and answers:
 
-`--probe` (run_check) is the discrimination the arithmetic otherwise cannot see: a
-neuter is written into a scratch `git worktree` at HEAD, never the user's tree, and
-the check re-runs there against the mutated file. It **deletes** the accused line
-rather than aborting before it, because a check that already fails keeps failing when
-code above it dies, which would call every failing check vacuous. A neuter that
-breaks the parse or leaves a name undefined is reported as `not-run`: "crashed
-differently" is not "behaved the same". `bisect.mjs` cannot use the same isolation —
-a scratch worktree has no untracked `.venv` or `node_modules` for the repro to run
-in — so it moves HEAD in the user's tree, refuses a dirty one, and restores the
-branch or commit it started from.
+| Situation                                        | Verdict | Why                                          |
+| ------------------------------------------------ | ------- | -------------------------------------------- |
+| No `--claim`                                     | `n-a`   | the commit stands alone                      |
+| `--claim` that is neither a file nor `file:line` | `n-a`   | a malformed claim must not read as a finding |
+| File not among the touched files                 | `no`    | with the file count in the reason            |
+| File present, no line given                      | `yes`   | file-level match only                        |
+| File present, line falls in a hunk               | `yes`   | `file:line` sits inside a changed hunk       |
+| File present, line outside every hunk            | `no`    | the hunks are listed in the reason           |
 
-`run_check.mjs --verify` re-executes a decided candidate's own oracle and records
-`verified_verdict` without letting it rewrite the claim; a claim that did not
-survive cannot be filed as standing. Stated limit, printed by the tool: same
-machine, same working tree, new process — it catches a flaky oracle, not an
-environment-specific pass. Re-execution reads the source back through
-`checkSource()`, which drops the recorded command line written above it: feeding
-that field in raw made the command the script's first line, so every multi-line
-check died on a SyntaxError and **M3 could not be computed at all** — the metric
-the project is judged on was unmeasurable by construction, and only a run on
-someone else's repo found it.
+Hunk overlap is **supporting evidence, not ground-truth cause correctness**: an enabling
+commit can expose an older defect, and the result carries that caveat verbatim. A bare
+word with no dot or slash is not a file, so it cannot be scored `no` and turned into a
+finding.
 
 ---
 
-## 8. Runner and language support
+## 6. `run_check.mjs` — oracle, control, probe, verify
 
-| Input                                  | Status                                                                                                                                                                                                                                                                      |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `python -m pytest`                     | **verified** — including pytest's rewritten `file:line: message` form, which is _not_ a Python traceback (parsing only `File "…", line N` made every real pytest failure look like zero frames)                                                                             |
-| `python -m unittest`                   | **verified**                                                                                                                                                                                                                                                                |
-| plain `python script.py` / `python -c` | **verified** — no runner name, so frame order comes from the matched syntax                                                                                                                                                                                                 |
-| `node --test`, plain `node file.mjs`   | **verified** — `node --test` reports failures on **stdout**; runner detection is command-based, then TAP markers                                                                                                                                                            |
-| `coverage.py` JSON                     | **verified against real coverage.py 7.16** — `executed_lines`, fail-only diff vs `--baseline`; each phase starts from a clean `.coverage` or the diff is empty                                                                                                              |
-| anything else                          | command-generic: frames fall back to `unknown`, no candidates, `--max-candidates`/`--timeout`/`--coverage` still apply                                                                                                                                                      |
-| `tsc` / compiler diagnostics           | **verified 2026-09-15 on `floorplanner`** — `packages/solver` failing `npm run typecheck` produced 7 frames and 5 candidates in compiler order (`DIAG_FRAME`); the same command was refused as "nothing landed in this repo" an hour earlier, before that syntax was parsed |
-| jest/vitest/rspec/go test              | **not verified** — same parser family, unproven; treat frame order as suspect until a case exists in `evals/cases/` (vitest has now run green twice under `reproduce.mjs` only as a _passing_ control, so its failure frames are still unseen)                              |
+`run_check.mjs` executes the model's check and decides the verdict by arithmetic from
+two facts: what the hypothesis predicted, and what the process actually returned.
 
----
+Flags: `--file` and `--candidate` (rank or unique location substring) and `--predict`
+(or `--verify`) required; optional `--cmd`, `--control`, `--hypothesis`, `--depth`
+(default 2, max 5), `--lang py|js|sh`, `--probe`, `--cwd`, `--repo`, `--timeout`
+(60 s), `--max-bytes`, `--rerun`, `--escalate`, `--keep`, `--yes`.
 
-## 9. The website (`site/`) — deleted 2026-09-15
+### 6.1 Sequencing: one candidate hard before escalating
 
-Five routes, a browser engine, a view model, a schema↔site sync guard, and six npm
-dependencies existed to demo a claim that has never been measured (§16). The engine
-re-implemented the spine instead of using it, its ranking path had no tests, and the
-guard existed only to keep the re-implementation honest — complexity paying rent on
-complexity. The site is gone, along with its workspace, its Vite deploy workflow and
-the sync test. What stays: `SKILL.md` as the one source of the contract (§11), and
-`cases.jsonl` as the artifact a human reads.
+`blockers(candidates, index, {escalate})` (`run_check.mjs:201`) refuses to touch a
+candidate while an earlier one is unfinished:
 
-If it comes back, it comes back after the benchmark (§4 of the design doc) has a
-table worth rendering, and it renders that table — not a simulation of the tool.
+| Earlier verdict        | Blocks?             | Why                                                              |
+| ---------------------- | ------------------- | ---------------------------------------------------------------- |
+| `pending`              | always              | never tested, so it must not unlock the next one                 |
+| `inconclusive`         | unless `--escalate` | the check timed out / could not run / control also failed        |
+| `inconclusive_vacuous` | unless `--escalate` | the check never depended on the accused line                     |
+| `confirmed`            | unless `--escalate` | the doc says confirmed means stop; `--depth 1` forbids even that |
+| `falsified`            | never               | rejection is a verdict; move on                                  |
 
-## 10. Packaging and distribution
+Other refusals, in order (`run_check.mjs:590`): `--verify` needs a recorded
+prediction and exit code; a candidate with no hypothesis (rule 4); a candidate that
+already has a verdict unless `--rerun`/`--verify`; the draft's reproduction outcome is
+not `reproduced` (the gate said stop); the candidate rank is past `--depth`. The draft
+is schema-validated _before_ any path is built from it, because `id` names a file this
+tool writes and then executes.
 
-| Path            | Command                                                               | Verified?                                                                                          |
-| --------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Clone installer | `node skills/ducktective/bin/install.mjs --target claude [--dry-run]` | **yes** — file placement, idempotent re-run, edited-file refusal, installed copy running its tools |
-| Any other agent | `--dest DIR`                                                          | the general case; no target is claimed for a scanner nobody has checked                            |
+### 6.2 Multi-line checks
 
-Two targets (`codex`, `agents`) and the Claude Code plugin marketplace manifests were
-deleted on 2026-09-15: distribution surface for a product with no demand signal, and
-each guessed target cost a test to keep honest. `--target` now accepts `claude` and
-refuses the retired names, so a silent no-op install is not reachable.
+The smallest falsifying artifact is often a five-line script, and both Python and Node
+resolve relative imports against the _script's_ directory — `.ducktective/checks/x.py`
+could not import the code under test. `materialize()` (`run_check.mjs:243`) therefore
+writes a multi-line check into the **repo root** as
+`ducktective-check-<caseId>-<rank>.<ext>`, sniffs the shebang or takes `--lang`, and
+refuses an unsafe case id with the same `CASE_ID` guard the store uses (this was a
+write-then-run outside the repo). The script is deleted after the run unless `--keep`;
+the full source is recorded in `check`, so the case still replays. Single-line checks
+run as-is.
 
-**Retirement propagates, if asked.** The installer only adds and updates, so a tool
-deleted upstream survives in every installed copy — `query_memory.mjs` was still installed
-(§13) after the repo removed it, a zombie a host agent would happily call. Any file under
-`dest` that the source no longer ships is reported as `stale` in the JSON and **removed
-only with `--force`**, because a file in that folder may be somebody's own addition.
+### 6.3 `classify()` — the verdict lattice
 
-**Upgrade is `--force`.** The installer compares contents and refuses to overwrite a
-file that differs from what it would write — right about a user's hand-edits, wrong
-about `git pull`, which makes every installed file look hand-edited. It says so and
-lists the files; nothing is clobbered either way.
+```mermaid
+stateDiagram-v2
+  [*] --> held
+  held --> inconclusive: check timed out / could not run / control failed
+  held --> falsified: prediction contradicted
+  falsified --> [*]: no receipt needed
+  held --> inconclusive_vacuous: held, but probe did not flip
+  held --> inconclusive: held, but no discrimination receipt
+  held --> confirmed: held + a receipt
+  confirmed --> unreplicated: the blind re-derivation did not reproduce it
+  confirmed --> [*]
+```
 
-Skill-only by design (§1): a thin set of tools the host agent can call beats an MCP
-server because there is no daemon, no install step, and the artifact is a file
-another skill can read.
+`classify(predicted, check, control, timeout, {controlPassed, probeFlipped, blind})` is a
+thin delegation to `classifyVerdict()` in `lib/verdict-policy.mjs`, which owns the rule and
+shares it with the store's refusal checks (`run_check.mjs:284`,
+`lib/verdict-policy.mjs`):
 
-## 11. Measurement
+```text
+if check.timedOut                       → inconclusive("the check hung")
+if notRunnable(check) or code not int   → inconclusive("could not run at all")
+if control and control failed/timed out → inconclusive("control also failed")
+held = (predicted == "pass") == (check.code == 0)
+if not held                             → falsified
+if probeFlipped == false                → inconclusive_vacuous
+if predicted == "pass" and probeFlipped != true
+                                        → inconclusive("pass needs a flipped probe")
+if not controlPassed and probeFlipped != true
+                                        → inconclusive("no discrimination receipt")
+if blind ran and did not hold           → unreplicated("not confirmed by a fresh context")
+                                        → confirmed
+```
 
-Four layers, cheapest and most mechanical at the bottom — the fourth is not a test, it is
-the only one that measures the product.
+The arithmetic in the `held` line is the whole point: for `--predict fail`, `held` is
+`exit != 0`; for `--predict pass`, `held` is `exit == 0`.
 
-1. **Guards** (`scripts/*.test.mjs`) — single-source SKILL.md; schema↔site
-   agreement; plugin/manifest and README↔installer agreement; run-log parsing;
-   architecture/tool coverage. The reference check asks **git** whether
-   `docs/architecture.md` is tracked rather than reading the file: a stray ignore
-   rule made the reference exist locally and be absent on CI, twice, and reading the
-   file could not tell those two states apart.
-2. **Unit + integration tests** (`npm test` prints the count; a number checked
-   into prose rots the moment a test is added): frame order, evidence rule,
-   pseudo-locations, id containment, policy refusals, tree-kill, bounded capture,
-   installer behaviour.
-3. **Behaviour corpus** — one directory per case under `evals/cases/` (`ls` for the
-   count), each driving a **real** command: pytest, unittest, a plain script,
-   node:test, a module throw, a genuine coverage.py diff, non-reproducing stale/green
-   runs, and broken-invocation shapes that must be refused rather than filed as
-   reproduced. `npm run eval` runs it on CI with real pytest and coverage.py and
-   prints the tally. Every case is **self-authored**, so the result is a regression
-   net, never evidence about the product (design v2 §4).
-4. **Run log** — `evals/runlog.mjs` + `RUNLOG.jsonl`, one row per investigation with
-   `provenance = real | constructed`, because `ref-work.md` §8 says to measure on
-   repos nobody chose for us and say so. `--report` prints **M1–M4** (one list, shared
-   by the plan and the tool), split into all-rows and real-rows-only, printing
-   `no data` where a row has none instead of inventing a zero. Columns:
-   `stop_correct`, `first_falsification_hit` and `survived_verify` are **derived from
-   the case file**; `decision_changed` is the one column a human answers, and `note`
-   is free text. A blank leaves a metric's denominator (it means nobody looked);
-   `no data` and `0%` are different facts and the report keeps them apart.
-   **M5–M9 were deleted on 2026-09-15** — `memory_changed_search`, `pair_case_id`,
-   `human_opened`, `tokens_plain`/`tokens_duck`, `wall_clock_min`, `duck_claim_right`,
-   `plain_claim_right` — every one of them a human transcribing a judgement about
-   their own run, which is how the project's headline number became its least
-   mechanical column. Passing those flags now fails with a pointer to the replacement
-   instead of dropping the data silently; `RUNLOG.jsonl` keeps whatever the old rows
-   recorded, because history is not rewritten to fit a smaller schema. Design §4
-   replaces them with cause-hit, false-confirm rate and cost measured mechanically
-   against a corpus with known answers.
-   New columns keep legacy rows short, and `read()` maps absent fields to empty, so a
-   migration cannot mis-shift or destroy a row. `--record` is an **upsert by case id** —
-   re-logging after `--verify` refreshes the row and inherits every answer it did not
-   restate, because two rows for one investigation would double each metric that case
-   feeds. Current numbers are never restated here —
-   `node evals/runlog.mjs --report` is the only source, and §16 records the state as of a
-   date.
+**Why a receipt is required.** A matching prediction proves the check _agrees_ with the
+hypothesis. A passing control proves it is _not always-fail_. Neither proves it is not
+_always-pass_, and neither proves its outcome depends on the accused line. An
+always-pass oracle agrees with any prediction, with full provenance — which is the
+confident wrong answer this project exists to catch, previously storable as
+`confirmed`. So:
 
-**What no layer could see.** Two first-run defects survived a green suite and a green
-corpus: `--out .ducktective/draft.json` (the path in `--help`'s own example) died with
-ENOENT because nothing creates the store directory, and the default `--cwd .` never
-matched an absolute frame path, so node's `file://` URLs and Python 3.13+ tracebacks all
-read as outside the repo — a real reproduction filed as `error` with zero candidates.
-Both harnesses passed an absolute `--cwd` and pre-created the output directory, so neither
-could reach the documented default path. The regression tests now **omit** those arguments
-on purpose, which is the durable lesson: a helper that normalises the environment for the
-tool under test also deletes the environment the user gets.
+- `--predict fail` needs a passing `--control` **or** a flipped `--probe`.
+- `--predict pass` needs a flipped `--probe`; a passing control cannot distinguish an
+  always-pass check.
+- A non-flip is `inconclusive_vacuous`, which is not a weaker `confirmed` — it says the
+  check was never about the suspect.
+- A flip shows **sensitivity under that mutation**, not that the accused line is faulty.
+  A non-flip shows **no detected sensitivity**, not that execution never touched the
+  line. Both notes are recorded.
 
-The same lesson repeated on the first run against someone else's repo, three more defects
-(plus the one that made this section's headline true: an always-pass oracle confirmed any
-prediction with full provenance until `--probe` existed, and the skill's own documented
-example command was that oracle):
-vendored `.venv` frames ranked as leads (§5), a materialized check ran under the machine's
-python and reported a `falsified` it never tested (§7), and `--verify` could not re-execute
-a multi-line check, so M3 was unmeasurable (§7). Every one of them was invisible for the
-same reason — the corpus is **self-authored**, so its frames are never vendored, its
-interpreter always has its deps, and nothing re-runs a check it just recorded. A regression
-net written by the thing it tests cannot see the world the tool meets; that is the whole
-argument for the run log.
+### 6.4 `probe()` — neuter the line on a scratch worktree
 
-The field-study kill criterion (ref-work §8: "if nobody opens the case files, the
-differentiator is theoretical") is **retired, not answered**. Design v2 §4 replaced it: a
-human-graded sample of 10–15 bugs cannot reach significance (3–0 under the null is p=1/8),
-and every input to it was the author remembering to run a baseline and then judging his own
-run. The decision now belongs to the mechanical table in design v2 §4 — cause-hit,
-false-confirm rate, cost — and M4 (`decision_changed`) survives only as the one
-human column in a ledger whose other four are derived from the case file.
+`probe()` (`run_check.mjs:403`) answers "does the check's outcome depend on the accused
+line?" by mutating the line in a disposable `git worktree` at `HEAD` — never the user's
+tree — and re-running the same check there.
 
-Docs cite each other by **section, never line number** — line numbers rot on the next
-edit, the same failure class as a test count checked into prose.
+```mermaid
+flowchart TD
+  A["git rev-parse --show-toplevel"] -->|fail| N1["not-run: not a git checkout"]
+  A --> B["resolve file relative to root"]
+  B --> C{"file exists at HEAD?"}
+  C -->|no| N2["not-run: no HEAD copy to neuter"]
+  C --> D{"git status --porcelain -- file clean?"}
+  D -->|no| N3["not-run: uncommitted edits"]
+  D --> E{"extension has a neuter strategy?"}
+  E -->|no| N4["not-run: no strategy for file"]
+  E --> F["mkdtemp + git worktree add --detach HEAD"]
+  F --> G["materialize check in worktree; wipe __pycache__"]
+  G --> H["baseline run in worktree"]
+  H -->|timeout/unrunnable/artifact| N5["not-run: no comparable baseline"]
+  H --> I{"baseline pass/fail == recorded outcome?"}
+  I -->|no| N6["not-run: clean worktree behaves differently —<br/>an untracked dependency, the probe would measure the environment"]
+  I --> J["for strategy in [delete, neutralize]"]
+  J --> K["mutate the line; wipe caches; run"]
+  K -->|timeout/unrunnable| N7["not-run"]
+  K -->|artifact| J
+  K --> L{"outcome changed?"}
+  L -->|yes| P["flipped = true (first comparable mutant)"]
+  L -->|no| Q["flipped = false (first comparable mutant)"]
+  J -->|"no comparable mutant"| N8["not-run: no usable mutant from any strategy"]
+```
 
----
+Key implementation facts:
 
-## 12. What is genuinely different here
+- **The worktree is compared to the real tree first.** It has neither untracked source,
+  the repo's `.venv`, nor `node_modules`. If the check does not even reproduce its
+  recorded outcome there, the mutant run would measure the environment, and the probe
+  says so instead of concluding. Missing untracked dependencies are the common cause.
+- **Neuter strategies** (`run_check.mjs:356`):
 
-`ref-work.md` §1 is blunt that graph + LLM + memory is table stakes, not a moat.
-Its §7 five pillars, mapped honestly:
+  | Family        | Strategy 1 `delete`      | Strategy 2 `neutralize`    |
+  | ------------- | ------------------------ | -------------------------- |
+  | Python        | `# dt-probe <original>`  | `<indent>pass  # dt-probe` |
+  | JS/TS/MJS/CJS | `// dt-probe <original>` | `<indent>;  // dt-probe`   |
 
-| Pillar                                            | State                                                                                                  |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| 1. Silent/oracle-free bugs via metamorphic checks | **parked** (§13); `bisect` + `--probe` are the two mechanics that replaced the claim                   |
-| 2. Evidence chain as the product                  | **built** — schema, Markdown mirror, enforced provenance, and the receipt is the artifact              |
-| 3. Preventative cold scan over `hidden_links`     | **parked**                                                                                             |
-| 4. Persistent memory, honestly measured           | store kept, `query_memory.mjs` **retired** — no measurement has ever shown it changed a decision (§13) |
-| 5. Packaged as a Skill, not an agent              | built; but it is a **distribution** moat, perishable by §8 — someone can wrap the same parts           |
+  Delete is sharpest — it removes exactly the accused computation. But deleting an
+  indented sole body line (`def f():\n    return x`) breaks the block parse, so the
+  original line is retried with a syntactically silent stand-in. This is an artifact
+  fallback, not a search through all strategies for the first flip.
 
-The defensible part in practice is narrower than the pitch and is §5: **the
-enforcement.** Existing debug skills instrument and hypothesise; the ones that gate
-gate on a human's judgement. Here a verdict is a stored exit code plus a declared
-prediction, checked by a program that will not write the file otherwise.
+- **Aborting before the line is the wrong strategy** and is not used: a check that
+  already fails keeps failing when the code above it dies, so exit-code comparison
+  would report "no change" about a line that mattered enormously. Neutralizing keeps
+  the process alive, so surviving is real evidence.
+- **Artifacts are not evidence.** A mutant that produces a parse or undefined-name
+  error (`MUTATION_ARTIFACT`, `run_check.mjs:380`) "crashed differently" and is not
+  scored; the tool tries the next strategy. If every strategy is an artifact, the
+  honest answer stays `not-run`, never `inconclusive_vacuous`.
+- **`__pycache__` is wiped** before the baseline and every mutant. Python validates
+  bytecode by `(mtime, size)`, and `pass  # dt-probe` is exactly as long as many
+  replaced lines, so a same-second rewrite can import stale baseline bytecode and fake
+  either a flip or a no-change.
+- **The first comparable mutant returns**, flip or not; exhaustion returns
+  `flipped: null` with reasons. The worktree is always removed and pruned in a
+  `finally`.
 
-Say the honest size of that evidence, though: it has refused **two** wrong claims, in
-one day, both authored by the person writing this sentence, and confirmed nothing a
-terminal could not have found (§16). The arithmetic was hardened by five defects —
-two caught by a throwaway repo walk, three by running the tool against someone else's
-code — and **zero** caught by the self-authored corpus that seemed to cover it.
+Mutation is **physical-line based**, not syntax-tree or logical-line aware. Inversion,
+numeric perturbation and sentinel-return strategies from design §E2 remain
+unimplemented.
 
----
+### 6.5 `--blind` — the stripped-context re-derivation
 
-## 13. Deliberately parked, with the trigger that un-parks each
+`--blind "<command>"` answers the question a first run cannot answer about itself:
+did a check written **without this run's context** reach the same conclusion? The
+prediction, control and probe are all graded by the same context that wrote the
+check, so none of them can see a check that is confidently about nothing. The
+blind check is authored as if from the symptom, the reproduction, the candidate
+`location` and the recorded `check` alone, then executed by `run_check.mjs`.
 
-| Item                                   | Would be built as                                                                                                                                                            | Un-parked when                                                  |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Oracle-free / metamorphic checks       | a `run_check` mode that tests invariants under input transforms instead of an existing failing test, and says confidence is lower for it                                     | real bugs arrive with **no failing test** (ref-work §4.2, §7.1) |
-| Cold Scan                              | a separate lower-priority command reading an existing tree-sitter graph (e.g. `graphify`) for drift/duplication, logging candidate cases to the store — never a graph we own | the reactive loop is used and trusted                           |
-| One-hop graph expansion                | a candidate _provider_ plugged into `seedCandidates`, results thrown away after ranking                                                                                      | local frames are insufficient on real bugs (design L65)         |
-| Alibi diagnosis of which step misled   | record whether motive, ranking, or expansion produced a bad lead, and replay from there                                                                                      | confirmed claims keep failing `--verify` (ref-work §6.3)        |
-| Rap sheet ranking (`query_memory.mjs`) | delete `query_memory.mjs` and its site twin; the JSONL store stays and `grep` is the reader                                                                                  | a benchmark shows "nearest previous case" changes a decision    |
-| Metamorphic/oracle-free checks v2      | construct-aware neuter strategies (sentinel return, inverted condition, perturbed constant)                                                                                  | line-deletion probes miss causes a corpus proves they share     |
-| SQLite store                           | a swap behind `readStore`/`writeCase` only                                                                                                                                   | JSONL stops being greppable at real volume                      |
+```mermaid
+flowchart TD
+  A["--blind CMD given?"] -->|no| Z["receipt absent — the case cannot be filed confirmed"]
+  A -->|yes| B{"CMD identical to --check?"}
+  B -->|yes| N1["refused: a copy is not a second opinion"]
+  B -->|no| C["run CMD under the same timeout and byte budget"]
+  C -->|not runnable| N2["blind_check inconclusive → verdict inconclusive"]
+  C --> D{"predictionHeld(predicted, exit code)?"}
+  D -->|yes| E["blind_check confirmed → verdict confirmed"]
+  D -->|no| F["blind_check falsified → verdict unreplicated"]
+```
 
----
+Recorded on the candidate as `blind_check` (`verdict`, `check`, `exit_code`,
+`evidence`). `write_case.mjs` refuses a `confirmed` whose `blind_check.verdict` is
+not `"confirmed"`; a non-reproduction is filed `unreplicated`, never `falsified`.
 
-## 14. Known limits
+**What each part proves, and what it does not.**
 
-- **Two real confirmed cases, both in the author's own repos, and neither paired.**
-  `--report` is the only source for the counts. That demonstrates the instrument fires
-  on foreign code; it is not a rate, and the comparison the project lives or dies on
-  (arm A vs arm B) has never been run (design v2 §4).
-- **Upgrading an installed skill needs `--force`.** The installer refuses to overwrite
-  files that differ from the source, which is right about a user's hand-edits and wrong
-  about `git pull`: after updating the checkout, every target looks "hand-edited". It is
-  refused loudly, with the file list, so nothing is clobbered either way.
-- `--verify` is same-machine/same-tree; it is not a portability or flakiness suite.
-- **Cost is not visible to a subprocess.** A tool run by an agent cannot see the host's
-  token count, which is one reason the hand-transcribed M6/M7 columns were deleted rather
-  than kept; in the benchmark they come from the agent's own usage record instead
-  (`pi --mode json` reports `usage` per message), so the number stops being a memory.
-- **The arms are not run yet.** `bench/` drives them through `pi --mode json`, which
-  fixes the two failures that killed the field study: the baseline is generated by a
-  fresh agent, not remembered by an author, and pairing is by construction rather than
-  by whether somebody recalled to run it first.
-- **A provider error must never score as an abstention.** The first smoke run on this
-  machine came back `429 FreeUsageLimitError` with an empty message and `stopReason:
-"error"`. Scored naively, that reads as "the bare agent refused to name a cause" — a
-  win for arm B bought by a rate limit. `bench/` records errored arms as `error` and
-  drops them from every denominator, and the runner refuses to score a run with no
-  assistant message at all.
-- **`--probe` deletes one line.** It proves the check depends on _this_ line, not that
-  the line is wrong, and a construct-aware neuter (sentinel return, inverted condition)
-  catches more shapes. `MUTATION_ARTIFACT` keeps a broken parse from being read as
-  vacuity, which is the honest failure mode rather than the confident one.
-- **`bisect` answers only regressions.** A bug that was always there has no green
-  ancestor and gets `no-good-ref`, which is a finding, not a failure. The blamed commit
-  is the one that made the test fail; an enabling change can expose an older defect, and
-  the tool prints that caveat rather than pretending to have found the origin.
-- **Neither `--probe` nor `bisect` works on a tree it cannot build.** The worktree has no
-  untracked deps; the bisect does, but only because it runs in the user's working tree.
-- Frame parsing for jest/vitest/go/rspec is unproven (§8).
-- **Candidate ids carry the tool's cwd, not the repo root's.** A workspace
-  compiler prints `tests/tmp-ext.test.ts(32,5)` while the command ran at the repo
-  root, so the seeded id is `tests/tmp-ext.test.ts:32` for a file at
-  `packages/solver/tests/tmp-ext.test.ts`. The text is verbatim from the failing
-  run — inventing a prefix would be guessing where the tool was standing — so
-  `--repo`-relative paths stay a human step (§8).
-- **M1 cannot see a false stop.** It counts every `does_not_reproduce`/`error` row as
-  a correct stop, including one caused by a parser gap in this skill (a real
-  `npm run typecheck` failure refused an hour before the fix). The metric is an
-  upper bound on stop-correctness and its denominator silently grows with our own
-  defects; nothing in the ledger distinguishes "stale ticket" from "we could not
-  read the output".
+- The exit code and evidence are **captured by the tool from a real process**, so
+  the receipt is executed, not a hand-typed verdict.
+- The **context separation is the host's obligation, not the tool's.** run_check
+  receives a command string; it cannot prove the author wrote it without the first
+  run's chat history, nor that a different context produced it. A host that retypes
+  the original check and changes a constant satisfies the tool while defeating the
+  mechanism.
+- So `blind_check` is a **protocol receipt, not structural separation** — the
+  strongest thing this architecture can enforce (it executes what the host
+  attests) and weaker than an independently spawned second agent. The gap is named
+  here rather than implied. It is the honest ceiling of a skill that embeds no
+  model runtime.
+- A non-reproduction is `unreplicated` — held, but not replicated — **not**
+  `falsified`: the first run may still be right about a check that happened not to
+  generalize.
 
----
+Default-on, deliberately: the failure this guards (a confident check about
+nothing) is silent, so an opt-in flag is skipped exactly when it is needed. A case
+cannot reach `confirmed` from one context. Same machine and working tree
+throughout, so this tests authoring independence, not environmental independence.
 
-## 15. Where to change things
+### 6.6 Recording, `--verify`, and evidence
 
-| To                                       | Change                                                                                                                                   |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| a new test runner's frames               | `parseFrames` in `reproduce.mjs` + a corpus case in `evals/cases/`; never a runner-name branch for ordering                              |
-| a new hard rule that must be unskippable | `policyViolations()` in `lib/case-file.mjs` + a refusal test (prose in `SKILL.md` alone will not hold)                                   |
-| a case-file field                        | `case-file.schema.json` (and `renderMarkdown` in `lib/case-file.mjs` if a human should see it)                                           |
-| a new way to believe a verdict           | `classify()`'s receipt gate in `run_check.mjs` + the mirror rule in `policyViolations()` + a refusal test                                |
-| the commit search                        | `bisect.mjs`: the `rev-list` walk and `at()` are the whole engine; `claimInCommit` is the grading, `parseTouched` the input              |
-| a new tool                               | `scripts/<name>.mjs`, document it in `SKILL.md` (a guard requires the mention), and it is auto-shipped by the installer's `skillFiles()` |
-| a policy about escalation                | `blockers()` in `run_check.mjs`; keep `--escalate` the only override                                                                     |
-| anything OS-facing                       | `scripts/lib/exec.mjs`, and ask whether a path decision should be a pure string helper instead                                           |
-| a numeric CLI flag                       | `numFlag()` in `scripts/lib/args.mjs` — three tools hand-rolled the same range check once and each got it subtly wrong                   |
-| the ledger's metric set                  | `FIELDS` + `summarise()` in `evals/runlog.mjs`, and design §4's benchmark replaces hand-graded metrics rather than adding new columns    |
+On a first run, `run_check.mjs` records on the candidate: `check` (runner command plus
+the materialized source), `predicted`, `check_exit_code`, `verdict`, `evidence`
+(check/control/probe blocks and notes), `control`/`control_exit_code` when given, and
+`probe`/`probe_exit_code`/`probe_flipped` when `--probe` was asked for. "It could not
+run" is recorded as `probe_flipped: "not-run"`, not as an absent field: a missing
+receipt must be visible to `write_case.mjs`.
 
-### Invariants — do not break
+`--verify` re-executes the decided candidate's own oracle, records
+`verified_exit_code` and `verified_verdict`, and refuses `--cmd` replacement: a second
+guess cannot move the answer. `survived = verdict === cand.verdict`. This is a fresh
+process on the same machine and tree — a flaky-oracle test, **not** a portability or
+independent causal validation. A claim that did not survive exits 2, because it is a
+finding, not a success.
 
-1. `SKILL.md` exists in exactly one place, and the installer ships it verbatim.
-2. Nothing executes without `--yes`; no denylist pretending otherwise.
-3. A verdict is only storable with `predicted` + `check_exit_code`, and must agree
-   with them. A `confirmed` additionally owes a discrimination receipt: a control that
-   passed or a probe that flipped. Agreement is not evidence.
-4. `does_not_reproduce` ⇒ zero candidates.
-5. `reproduced` ⇒ in-repo evidence; none ⇒ `error`.
-6. Statuses and verdicts stay inside the schema enums; `additionalProperties: false`
-   stays on.
-7. Ids never reach a filesystem path unchecked.
-8. There is no site, no server, no DB, no auth. The store is a file; the artifact is
-   a Markdown mirror a human opens.
-9. Path classification stays host-independent (no `path.isAbsolute`/`basename`
-   decisions that flip between Windows and CI).
-10. No claim ships without a receipt: each number on a page carries a source and a
-    date, and each metric in `RESULTS.md`/`RUNLOG.jsonl` states its provenance.
+`--probe` is only run once the prediction has held: a falsified candidate needs no
+discrimination receipt, since rejecting a hypothesis is the half that was never broken.
+The prediction is graded provisionally first (as if the receipt were coming), because
+demoting before the probe would mean the probe never runs.
+
+Exit: `0` recorded, `2` for `inconclusive`/`inconclusive_vacuous` (a harness-level
+result should leave a non-zero trace), `1` refused, `3` dry run.
 
 ---
 
-## 16. State of play (dated snapshot — invariant 10)
+## 7. `check.mjs` — the composed verdict
 
-As of **2026-09-15**. Everything below is a pointer to a command, because the moment a
-live number is copied into prose it starts rotting.
+`check.mjs` grades a root-cause claim the agent already made. It composes the other
+tools and invents nothing. Flags: `--claim` and `--repro` (required), `--check`,
+`--predict`, `--control`, `--repo`, `--skip-bisect`, `--budget`, `--timeout`, `--out`,
+`--yes`.
 
-| Question                             | Ask                                                                                    |
-| ------------------------------------ | -------------------------------------------------------------------------------------- |
-| Do the tools still behave?           | `npm test` (unit + guards) and `npm run eval` (behaviour corpus, real pytest/coverage) |
-| Does a verdict mean anything?        | `run_check.mjs --probe` on a real claim: `inconclusive_vacuous` is the honest answer   |
-| Can it find a commit?                | `bisect.mjs --cmd "<repro>" --claim file:line --yes` in a repo with a regression       |
-| Has the skill ever found a real bug? | `node evals/runlog.mjs --report` — reproduced cases are the M2 denominator; read it    |
-| Did CI pass on the pushed branch?    | `gh run list --limit 5`                                                                |
-| What ships?                          | `node skills/ducktective/bin/install.mjs --target claude --dry-run`                    |
+### 7.1 Sequence
 
-**The verdict, stated as plainly as the receipts allow (2026-09-15):**
+```mermaid
+sequenceDiagram
+  actor Human
+  participant C as check.mjs
+  participant R as reproduce.mjs
+  participant B as bisect.mjs
+  participant K as run_check.mjs
+  participant W as write_case.mjs
+  Human->>C: --claim --repro [--check --predict --control] [--yes]
+  C-->>Human: printed plan (exit 3) unless --yes
+  Human->>C: --yes
+  C->>R: reproduce the command
+  R-->>C: outcome + seeded candidates
+  C->>B: bisect (only if reproduced)
+  B-->>C: first bad commit + claim_in_commit
+  C->>K: candidate 1, --predict, always --probe
+  K-->>C: verdict + probe_flipped + control exit
+  C->>K: --verify (only if confirmed)
+  K-->>C: survived + verified_verdict
+  C->>W: store the draft
+  W-->>C: stored or refusal
+  C-->>Human: evidence box on stderr, JSON grade on stdout
+```
 
-- **Discovery value: none demonstrated.** Both real causes fell out of ordinary
-  commands — `npm run typecheck`, and a pytest warning escalated to an error. The skill
-  saw nothing a careful engineer with a terminal would not have seen. Anyone reading a
-  claim here that it "finds bugs agents miss" should stop: §1 promises reproduction,
-  falsification and a record, not clairvoyance.
-- **Enforcement value: two catches, both on the author, both same-day.** A designer bug
-  report with a file, a line and a plausible `why` — refused by rule 2, and the ticket
-  died ten minutes later under a real commit. And floorplanner's tempting wrong fix
-  (`lib: ["DOM"]`, which turns the gate green and hides two assertion-free tests) — the
-  third fact of the oracle is what says not to. n=2, self-witnessed, exactly the
-  denominator design v2 §4 distrusts. It shows the mechanism is not theatre; it does
-  not show it works.
-- **The metric that decides the project has never been run: M9 paired = 0.** The author
-  skipped the bare-baseline rule twice in one day while doing nothing else. If a protocol
-  cannot survive its own author's hurry, the ceiling on this project is adoption cost, not
-  code quality — and that is a product finding, not a footnote.
-- **What did pay for itself was a different thing entirely:** pointing the tool at foreign
-  repos surfaced four defects in this one (vendored frames, venv-blind checks, `--verify`
-  un-runnable, ledger double-count) that 119 unit tests, 14 corpus cases and a green CI all
-  missed. That is evidence about self-authored tests, not about debugging.
-- **Therefore: unproven, with the cheap half of the pitch disproven.** Not worthless —
-  unfalsified so far, because the one comparison that could falsify it has not been run.
-  The decision belongs to design v2 §4's table: if arm B's false-confirm rate (C2) does
-  not drop by ≥10 points at ≤2× the tokens, the correct action is to archive this repo
-  with its receipt and keep `bisect` + the probe, not to keep polishing the instrument.
+When `--check` is given, `check.mjs` replaces the seeded candidates with the supplied
+claim as candidate 1 (`check.mjs:324`) — it is a claim evaluator, not an autonomous
+candidate-search loop. It writes `.ducktective/draft.json` and `.ducktective/check.json`
+(override with `--out`).
 
-- **Built and checkable:** the spine (gate → commit search → oracle + probe → case file),
-  enforcement at the store boundaries, one installer target, and an M1–M4 ledger whose
-  hand-transcribed columns are gone rather than half-filled. The website, the plugin
-  manifests, two installer targets and `query_memory.mjs` were deleted on 2026-09-15
-  (§9, §10, §13): maintenance surface for a claim with no demand signal behind it. The documented spine now runs end to end in a repo
-  that has never seen the skill — first in a throwaway git repo, which is how the two
-  default-argument defects in §11 were caught, and now in a real one, which is how the
-  three in §5/§7 were.
-- **Two real cases, both confirmed on the first candidate, both surviving `--verify`:**
-  `DT-260915-b84fdc` in `WebPointCloud` (a 3DGS overflow probe that `return`s its flag
-  where it should assert, so it cannot fail) and `DT-260915-50b158` in `floorplanner` (a
-  committed debug leftover: `tests/tmp-ext.test.ts` logs `ext.info`, a field
-  `ConstraintEvaluation` does not declare, and `console` under a `lib` that excludes it,
-  while asserting nothing). Both were found by the **installed** skill. The second one
-  only worked because of the first: `tsc`'s `path(line,col):` diagnostics were refused as
-  "nothing landed inside this repo" until `DIAG_FRAME` shipped the same evening (§8).
-- **Not built, by policy:** everything in §13. The triggers are evidence-shaped and none
-  has fired — including the one that could have been satisfied with zero users (design §7),
-  which the first real case came close to firing and did not, for a reason design §7 now
-  writes down rather than implies.
-- **Unproven:** value at any scale. One case proves the instrument fires on someone
-  else's code; §9 is a _rate_, and a denominator of one is not one. The bare-run
-  comparison (M8 vs M9) has never been made, so the sentence "it reduces confident wrong
-  answers" is still unevidenced in both directions.
-- **Waiting on a human, not on code:** the design §4 benchmark — a corpus with known
-  answers, cause-hit against gold hunks, arm A vs arm B with no author in the loop — and a
-  decision date for it (2026-09-29 proposed, unconfirmed). The field study's M5–M9 are
-  retired, so nothing waits on memory pairs or hand-graded baselines any more.
-- **Still unexercised:** a host agent that _discovered_ the skill rather than being told
-  where it lives — this run followed the installed `SKILL.md` by hand, and Claude's
-  `/plugin install` and Codex's own scan are still unproven (§10, §14). And **no stranger
-  has ever used it**: every ledger row, including the two confirmed cases and both stops,
-  was produced by the author, on his own machine, against repos he already works in.
-- **Repo plumbing that has bitten five times:** `docs/` must stay tracked — the guard suite
-  reads `docs/architecture.md`, and commits that carry modified files while dropping
-  newly-added ones leave CI red on a pushed branch. The tracked-not-present check in §11 now
-  fails locally within one command, so this cannot hide silently again — which is how it was
-  found in `8d3583f`/`5f4af8e`, again on 15 Sep, and a third time that evening. **Who did it
-  is not known, and the sentence that said "something outside the repo" was itself the defect
-  this project exists to prevent: an unfalsified causal claim, bolded, asserted by the person
-  holding the file.** What is known, as of 23:40 the same evening:
+### 7.2 Rows and the grade
 
-  - `git log -p -- .gitignore`: a bare `docs/` was **added by `1dc6d09`** (13 Sep) and removed
-    by `5f4af8e`. It is not foreign to this repo; sessions working in it have written it.
-  - `vitruvius/.gitignore:9` carries the same bare rule, committed by `0f670af` (11 Sep) in a
-    cleanup that moved files out of `docs/`. Same hand-shaped event, different repo.
-  - It is not a git mechanism: no `core.excludesFile`, no `.git/info/exclude` entry, no hooks,
-    no `core.hooksPath`. `strings` on `graphify.exe` names no `gitignore`, and this repo has no
-    `graphify-out/`, so the obvious suspect is unsupported too.
-  - The filesystem gives one event, not a culprit: `.gitignore` mtime 22:59:13 with no other
-    file touched in the repo between 22:56 and that moment; the next write (23:01:54) was the
-    removal.
-  - Separate and worse in consequence: an external paste overwrote `architecture.md` with a
-    critique and **emptied** `ducktective-design.md` and `ref-work.md` to zero bytes; both were
-    recovered from the git index, which is the only reason they still exist. The commit that
-    followed (`b576d1d`) shipped 8 files and no reference at all, though docs were staged when
-    it was written.
+Each row is `[id, label, state, evidence]` where state is `yes` (a tool proved it),
+`no` (a tool disproved it), or `n/a` (nobody attempted it). **There is no "asserted"
+state**: a claim cannot earn a point by being stated confidently.
 
-  Best-supported reading: an agent session in this home directory, doing what two of them have
-  demonstrably done before. Settling it would mean watching the file across a session, which is
-  not worth the time — what was worth doing is neutralising it: `git add -f docs` (a force-added
-  path stays tracked whatever the ignore file says) and recovering the reference from the index
-  instead of from memory. The guard can still only fail loudly afterwards.
+| Row id           | Proved by                                               |
+| ---------------- | ------------------------------------------------------- |
+| `reproduces`     | `reproduce.mjs` outcome                                 |
+| `regression`     | `bisect.mjs` found a first bad commit                   |
+| `claim ∈ commit` | the claim's line sits inside a hunk that commit changed |
+| `discriminates`  | `--probe` flipped when the accused line was neutered    |
+| `control`        | `--control` passed on the known-good path               |
+| `prediction`     | `--predict` agreed with the executed exit code          |
+| `survives`       | `--verify` re-ran the claim and it held                 |
+
+`grade(rows)` (`check.mjs:132`):
+
+```text
+earned      = count(state == "yes")
+disproved   = count(state == "no")
+ratio       = earned / rows.length
+contradicted = any(id in {prediction, survives} and state == "no")
+repro        = state of the "reproduces" row
+letter = contradicted or repro == "n/a" ? "F"
+       : repro == "no"                    ? "n/a"
+       : ratio >= 0.9 ? "A" : ratio >= 0.7 ? "B" : ratio >= 0.5 ? "C" : "D"
+```
+
+- An uncontested hunk miss is **not** a disproof (an enabling commit can expose an
+  older bug), so it does not cap the grade; a contradicted prediction or failed re-run
+  does.
+- A stale ticket is not a bad grade: `repro == "no"` yields `n/a`, because refusing to
+  name a cause for something that does not reproduce is the behaviour the project
+  rewards.
+- A harness that never ran (`repro == "n/a"`) is an F.
+- The letter measures **evidence completeness**, not the probability that the cause is
+  correct. It is printed with that note. Exit 0 means the report was produced, not that
+  the claim was confirmed or the case stored; callers must inspect the result.
+
+Unattempted rows count against the denominator, which is the whole point of a receipt.
+
+---
+
+## 8. `write_case.mjs` and `lib/case-file.mjs` — the enforcement point
+
+`write_case.mjs` reads a case (JSON from `--file` or stdin), refuses it if it breaks the
+schema or the hard rules, and otherwise appends it to the store. A refusal means the
+investigation is wrong — fix the investigation, not the JSON.
+
+```mermaid
+flowchart TD
+  IN["case file JSON"] --> S["validateSchema against case-file.schema.json"]
+  S -->|problems| REF["exit 1: REFUSED<br/>list every reason"]
+  S -->|clean| P["policyViolations — the hard rules"]
+  P -->|problems| REF
+  P -->|clean| W["writeCase"]
+  W --> J["`.ducktective/cases.jsonl`<br/>upsert one line per id"]
+  W --> M["`.ducktective/cases/ID.md`<br/>Markdown mirror"]
+```
+
+### 8.1 The schema validator
+
+`validateSchema` (`case-file.mjs:44`) is a hand-rolled subset of JSON Schema, kept small
+so the skill stays a copy-one-folder install with zero dependencies. It implements:
+single or union `type`, `enum`, `required`, `properties`, `items`, `pattern`,
+`maxItems`, and `additionalProperties: false` at every level. Unknown keys are
+rejected: a misspelled field otherwise validates and later reads as `undefined`, which
+is how a case file quietly loses its confidence or its candidates.
+
+### 8.2 `policyViolations()` — the hard rules the schema cannot state
+
+The candidate-level rules and the confirmation arithmetic live in
+`lib/verdict-policy.mjs` (`candidateViolations`, `classifyVerdict`), so `run_check.mjs`
+and the store compute the same thing and cannot drift; `verdict-policy.test.mjs`
+asserts the schema enums and the policy sets agree. The case-level rules stay here. Any
+non-empty result refuses the write.
+
+| #   | Rule                                                                       | Refusal if broken                                                                                                      |
+| --- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| 1   | A symptom must be recorded                                                 | empty `symptom`                                                                                                        |
+| 2   | Nothing reasons about a bug that never failed                              | non-`reproduced` outcome with candidates, or status `confirmed`                                                        |
+| 3   | Every decided candidate states a hypothesis                                | verdict ≠ `pending` with an empty hypothesis                                                                           |
+| 4   | A verdict is an executed check                                             | `confirmed`/`falsified`/`inconclusive_vacuous` needs `check`, `evidence`, `predicted`, and a numeric `check_exit_code` |
+| 5   | A verdict must not contradict its own arithmetic                           | `predicted`+exit implies the other verdict                                                                             |
+| 6   | A claim that failed re-execution cannot be filed as the original           | `verified_verdict` differs from `verdict`                                                                              |
+| 7   | A control that also failed is not an oracle                                | `confirmed` with numeric `control_exit_code ≠ 0`                                                                       |
+| 8   | `confirmed` owes a discrimination receipt                                  | no passing control **and** no flipped probe                                                                            |
+| 9   | `confirmed` cannot coexist with a non-flip                                 | `probe_flipped: "no"`                                                                                                  |
+| 10  | A pass prediction needs a flipped probe                                    | `predicted: "pass"` with `probe_flipped ≠ "yes"`                                                                       |
+| 11  | `inconclusive_vacuous` is the probe's finding, not a word for a weak check | `probe_flipped ≠ "no"`                                                                                                 |
+| 12  | A cause, or strong confidence, only travels with a confirmed status        | `confirmed_cause` or `high`/`medium` confidence without `confirmed`                                                    |
+| 13  | Status `confirmed` needs a confirmed cause and a real confidence           | no confirmed candidate, or missing `confirmed_cause`, or `none` confidence                                             |
+| 14  | Unverified work is labelled, never presented as a cause                    | `unverified`/`exhausted` needs `leading_hypothesis`, no confirmed candidate                                            |
+| 15  | A patch follows a confirmed cause                                          | `suggested_patch` without `confirmed`                                                                                  |
+
+These are consistency checks over **supplied records, not authenticated execution
+attestations**. Fabricated evidence or a poor oracle can still satisfy the arithmetic;
+the tool narrows the space of confident wrong answers, it does not eliminate it.
+
+### 8.3 The store
+
+`readStore` (`case-file.mjs:331`) returns `raw` lines and parsed `rows` that are
+index-aligned; unparseable lines parse to `null` and are preserved, because a rewrite
+that rebuilds the file from parsed rows alone deletes whatever the parse skipped.
+`writeCase` upserts by `id` — an updated case rewrites its own line instead of piling
+up copies — and writes both files via temp-file + rename
+(`writeAtomic`, `case-file.mjs:357`). It also derives a **cause identity**
+(`cause_hash`/`cause_key`) and upserts `<repo>/.ducktective/causes.jsonl`, so a
+repeated root cause increments `count` instead of adding a near-duplicate row;
+`write_case.mjs --causes` prints that index, most recurrent first. The JSONL and
+Markdown pair is **not one transaction**, and neither is the cause index. `newCaseId()` is `DT-YYMMDD-<6 hex>`, sortable by day with a collision
+guard. `CASE_ID` is `^DT-[A-Za-z0-9][A-Za-z0-9-]{0,31}$` — no `/`, `\` or `.`, which is
+exactly what a prefix-only guard failed to forbid. `repoRoot()` walks up to `.git` and
+falls back to the starting directory, never the filesystem root, so a tarball or CI
+checkout does not create `.ducktective/` next to `C:\Users` or `/`.
+
+---
+
+## 9. Data model and what each receipt proves
+
+### 9.1 Case-file shape
+
+```text
+case
+├─ id                       DT-YYMMDD-hex
+├─ opened_at                ISO 8601
+├─ symptom                  verbatim, one paragraph
+├─ reproduction
+│   ├─ command              exact command run
+│   ├─ outcome              reproduced | does_not_reproduce | error
+│   ├─ duration_ms
+│   ├─ exit_code            number|null (null = signalled / never started)
+│   ├─ runner               pytest | unittest | node-test | unknown
+│   ├─ stdout / stderr      clipped, head and tail kept
+│   ├─ stack[]              raw frame lines
+│   └─ covered[]            {file, line} executed by the failing run
+├─ candidates[]  (max 5)
+│   ├─ rank, location, why, hypothesis, check, evidence
+│   ├─ verdict              pending | falsified | confirmed | inconclusive | inconclusive_vacuous | unreplicated
+│   ├─ predicted            pass | fail
+│   ├─ check_exit_code      number|null
+│   ├─ control, control_exit_code
+│   ├─ probe, probe_exit_code, probe_flipped   yes | no | not-run
+│   ├─ probe_attempts[], probe_artifact        per-strategy outcomes (C7)
+│   ├─ blind_check          executed stripped-context re-derivation receipt (design v3 E2)
+│   └─ verified_exit_code, verified_verdict
+├─ confirmed_cause          string|null
+├─ leading_hypothesis       string|null
+├─ confidence               high | medium | low | none
+├─ cause_hash, cause_key    derived cause identity + audit tuple
+├─ count                    distinct cases sharing cause_hash (derived)
+├─ cause_confidence         derived 0..1 rating, persisted by writeCase
+├─ not_reportable           reason the case may not be surfaced, or null
+├─ suggested_patch          string|null
+├─ status                   open | confirmed | does_not_reproduce | exhausted | unverified
+└─ notes
+```
+
+Required keys are `id`, `opened_at`, `symptom`, `reproduction`, `candidates`, `status`,
+`confidence`; every object rejects unknown properties. The authoritative shape is
+[`case-file.schema.json`](../skills/ducktective/case-file.schema.json), and `SKILL.md`
+carries the field names as the contract. `open` exists so a mid-flight case can be
+persisted; SKILL.md forbids patching from it. `error` describes the reproduction, not
+the verdict, so an unanswered question is `unverified` with the harness note in
+`leading_hypothesis`.
+
+### 9.2 Evidence semantics — the honest table
+
+This is the heart of the architecture. Each mechanism buys a specific, bounded fact.
+
+| Mechanism                           | Proves                                                           | Does **not** prove                                                                 |
+| ----------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Reproduction gate (`reproduce.mjs`) | the symptom occurs now, in this repo, on this command            | that the ticket is stale when it does not reproduce                                |
+| Traceback ordering                  | which frames are near the fault                                  | that the nearest frame is the cause                                                |
+| Fail-only coverage                  | a line the failing run executed and no passing run did           | that the line is faulty; coverage is a weak fault proxy                            |
+| `--predict` vs exit code            | the check agreed with the hypothesis                             | that the check tested anything about the accused line                              |
+| `--control`                         | the check is not always-fail                                     | that the check is not always-pass                                                  |
+| `--probe` flip                      | the check's outcome is sensitive to the line under that mutation | that the line is faulty                                                            |
+| `--probe` non-flip                  | no sensitivity detected under that mutation                      | that execution never touched the line                                              |
+| `--verify`                          | a fresh process reached the same verdict on the same machine     | portability, or independent causal validation                                      |
+| `--blind` (executed second check)   | a differently written check fails/passes the same way            | that it was authored without the first run's context; same tree and machine        |
+| `--blind` non-reproduction          | the claim was not replicated → `unreplicated`                    | that the first cause is wrong                                                      |
+| `bisect` + `claim_in_commit`        | the blamed commit's hunks contain the accused line               | that the commit introduced the defect (an enabling change can expose an older one) |
+| `--probe` on a clean worktree       | the check behaves the same without untracked deps                | that the dependency set matches the user's for all cases                           |
+| Guard suite (`npm test`)            | the tools behave as documented                                   | that Ducktective improves debugging                                                |
+
+The store's own consistency rules are arithmetic over the receipts above. They are not
+authentication: fabricated evidence can satisfy arithmetic. This is stated in the tool,
+not hidden in a doc.
+
+---
+
+## 10. Markdown mirror
+
+`renderMarkdown` (`case-file.mjs:252`) writes the same facts in reading order to
+`.ducktective/cases/<id>.md`, which is the file a human opens in 30 seconds. It renders
+status and confidence, the reproduction command and outcome, the raw stack and clipped
+stderr, the fail-only sites, every candidate with its hypothesis, probe result and
+evidence, the confirmed cause or leading hypothesis, an optional secondary patch, and
+notes. Long evidence is clipped keeping both ends, because pytest's failure summary and
+a traceback's exception sit at the tail. The JSONL is the record another skill may read
+one day; the Markdown is what a person reads tomorrow morning. Both are written in the
+same call so they cannot disagree.
+
+---
+
+## 11. Verification, measurement and maintenance
+
+Checked on **2026-09-21**, against `a7b4755`: `npm test` passed **213/213** locally
+(source: the Node test runner, including real subprocess and temporary-repo tests; a
+local run took ≈ 30 s). This is regression evidence, not a product-effectiveness
+estimate.
+
+| Layer              | Command                                | What it can prove                                                                                                                                                                            |
+| ------------------ | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Guards             | `npm test`                             | the `ducktective` contract has exactly one `SKILL.md` (other skills are allowed); every shipped tool named in `SKILL.md` and here; installer coverage; `docs/architecture.md` tracked by git |
+| Unit + integration | `npm test`                             | frame order, the evidence rule, id containment, policy refusals, tree-kill, bounded capture, installer behaviour                                                                             |
+| Behaviour corpus   | `npm run eval`                         | the tools act as documented against real pytest/unittest/`node:test`/coverage.py runs — **self-authored cases**, so a regression net, not evidence of value                                  |
+| Mutation canary    | `npm run canary`                       | candidate ranking did not regress since last night; mutants are easier than real faults, so a regression alarm, never product evidence                                                       |
+| Run log            | `node evals/runlog.mjs --report`       | counts derived from case files, split by provenance                                                                                                                                          |
+| Lint / format      | `npm run lint`, `npm run format:check` | style gates; not run by CI's only lane                                                                                                                                                       |
+
+- `evals/cases/` holds one directory per case with a `case.json` naming a real command
+  and the expected conclusion. `evals/run.mjs` runs `reproduce.mjs` with the case
+  directory as cwd and reports four harness-measurable numbers: stale tickets stopped,
+  broken commands refused, nearest-fault ranking, and cases behaving exactly as
+  specified. It can measure the gate; it cannot tell you the gate is the one the plan
+  asked for.
+- `evals/canary.mjs` (`npm run canary`) mutates `evals/canary/target/calc.mjs`, keeps the
+  mutants its tests kill, and asks `reproduce.mjs` whether the first lead is the line it
+  broke; survivors must return no candidate. First measured run: 88% cause-hit@1 on
+  killed mutants, 100% no-candidate on survivors; on this repo's own `bench/report.mjs`
+  it is 25% (crash-shaped mutants 100%, value mutants 0%, because JS seeding is
+  traceback-only). It runs nightly in `canary.yml`, never on the PR path, because it is
+  a regression alarm — mutant-shaped bugs are not real faults.
+- [`docs/field-run-designer.md`](field-run-designer.md) records a **field run** of the
+  product on a repository it did not author: 43 opening-cut anomalies on the pre-fix
+  commit `6e55c0f0`, 0 on the fix `9095f188`, confirmed through the gate with a passing
+  control. One investigation, not a measured rate.
+- `evals/RUNLOG.jsonl` is one row per investigation, with a `provenance` column
+  (`real` vs `constructed`) so fixtures are never laundered into evidence. `runlog.mjs`
+  derives M1–M3 from the case file and M4 (`case file changed a decision`) is the only
+  human-reported metric. Blank means "nobody recorded it", never "no". The retired
+  M5–M9 flags now fail rather than silently dropping data.
+- The run-log test caught a real defect where rows were parsed with `line[i]`
+  (characters, not fields), reporting "0 real cases" against real rows and never
+  raising — the worst kind of bug in a project whose pitch is measurement.
+- `scripts/skill-single-source.test.mjs` is the guard that keeps this file honest: it
+  fails if a second `SKILL.md` appears, if a shipped tool is never mentioned by exact
+  filename here, or if `docs/architecture.md` is untracked. `.github/workflows/eval.yml`
+  runs `npm test` and `npm run eval` on `skills/**` and `evals/**` changes; a docs-only
+  change does not trigger it.
+
+The paired benchmark in design §4 (extended by design v3 with C8 blind-checker overturn
+rate and C9 why/evidence violations) is **built but not yet run**. `bench/` holds its
+capture path — source validation, the **local materialiser** (`bench/materialize.mjs`),
+the **arm runner** (`bench/run.mjs`) with a **harness registry** (`bench/agents.mjs`,
+auto-detecting OpenCode v2 via `bench/opencode-agent.mjs`, stub for CI), the `claim.json`
+contract, content-addressed job identity, and the C1–C12 arithmetic. The runner defaults
+to the **dev split**, so a plain run leaves the **held-out third** untouched, and takes
+`--concurrency`, `--budget-tokens`/`--budget-ms` and a dated `--run-id`; every row carries
+run/model/agent/split. An instance carries
+an optional **oracle** — a host-authored check for a silent bug, verified to fail at the
+buggy commit and pass at the fix — and may use **`testPatch`** (copy the fix commit's
+changed tests into the buggy checkout, SWE-bench's FAIL_TO_PASS shape); `bench/mine.mjs`
+proposes a candidate from one fix commit and the materialiser verifies it. Instances that
+need the repo's toolchain run in `mode: "worktree"` inside the repo, so `node_modules`
+resolves. `corpus/` holds **twelve verified real instances** from the designer repo (one
+host-authored oracle, eleven test patches); they are verified fail-at-bug/pass-at-fix but
+**not vetted for answer leakage** (see `corpus/README.md`). The how-to-run contract is the
+**`ducktective-bench` skill** (`skills/ducktective-bench/SKILL.md`). There is no real-model
+run, no Docker/remote corpus source, no provider-error exclusion path or token-cost
+capture, and **no two-arm result**; one field run exists
+([field-run-designer.md](field-run-designer.md)), which is a single confirmed case, not
+the C2/C8 aggregate. **Do not describe a provider smoke test, a per-case probe, or a
+green canary as benchmark evidence.** E5's why/evidence check is the
+one policy piece here that runs at the `write_case.mjs` boundary (it records, it does not
+yet refuse).
+
+---
+
+## 12. Design intent versus shipped reality
+
+Design v2 proposed four things in order (E1–E4). What shipped:
+
+| Design item                               | Status             | Note                                                                                                                                   |
+| ----------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| E1 `bisect.mjs` — first bad commit        | **shipped**        | Doubling discovery, first-parent binary search, budget gate, `--repeat`, skip/flaky handling, hunk ∩ claim                             |
+| E2 the probe — discrimination receipt     | **shipped**        | Delete + neutralize strategies, not E2's four-strategy table; `inconclusive_vacuous` wired through the schema and `policyViolations()` |
+| E3 `spectrum.mjs` — Ochiai SBFL           | **not built**      | No `--spectrum`, no full-suite context collection, no suspicion ranking. Fail-only coverage is the only coverage signal                |
+| E4 `shrink.mjs` — ddmin minimisation      | **not built**      | Parked behind the benchmark, as the design said                                                                                        |
+| Benchmark harness + C1–C12                | **built, not run** | Materialiser, arm runner, harness registry (OpenCode verified, stub for CI), gold-hunk scoring; no two-arm result                      |
+| Cold scan, metamorphic/oracle-free checks | **not built**      | Explicitly out of scope                                                                                                                |
+| Memory ranking (`query_memory.mjs`)       | **retired**        | The store remains; no automatic case-similarity ranking                                                                                |
+
+The discovery half was folded into the gate and the honest framing changed with it:
+candidate seeding reorders information the host already had (traceback, coverage), so it
+is a prior, not a finding. The two mechanisms that add facts the host did not have are
+`bisect.mjs` (a commit) and the probe (whether the check depends on the line).
+
+### 12.1 What landed in 0.2.0
+
+Measurement-integrity work, from [implementation.md](implementation.md) Phase 0:
+
+| Change                                     | Where                                                                     | Why                                                                                                                                                                        |
+| ------------------------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One verdict policy                         | `lib/verdict-policy.mjs`, used by `run_check.mjs` and `lib/case-file.mjs` | The rule lived in two places; `verdict-policy.test.mjs` asserts the schema enums and the policy sets agree, and that the classifier and the store agree on a table of runs |
+| Derived cause-confidence + reportable gate | `caseReportability()`, `candidateViolations()`                            | A confirmed cause below the floor cannot be filed as one; surfaced in `write_case.mjs` output and the Markdown mirror                                                      |
+| Cause identity and recurrence              | `causeIdentity()`, `causes.jsonl`, `--causes`                             | A repeated root cause is a recurrence count, not a near-duplicate row                                                                                                      |
+| Probe attempt receipts                     | `probe_attempts`, `probe_artifact`                                        | The artifact rate (C7) is computable from the store instead of discarded                                                                                                   |
+| Blind-check receipt (E2)                   | `run_check.mjs --blind`, `blind_check`, the `unreplicated` verdict        | The tool executes a second check and refuses `confirmed` without it (default-on); context separation stays the host's obligation — see §6.5                                |
+| Mutation canary (Tier 1)                   | `evals/canary.mjs`, `npm run canary`, nightly `canary.yml`                | Ranking regressions surface same-day; 88% cause-hit@1 on the fixture, 25% on this repo's own `bench/report.mjs`                                                            |
+| Retired-tool guard                         | `scripts/retired-tools.test.mjs`                                          | Shipped executable code may not name a retired tool                                                                                                                        |
+| Benchmark instrument                       | `skills/ducktective-bench/`, `bench/`                                     | Materialiser, arm runner with a harness registry (OpenCode verified, stub for CI), C1–C12 arithmetic, all stub-tested. One field run (§12.2); **no two-arm result yet**    |
+
+The earlier known drift — `bin/install.mjs` pointing at the retired `query_memory.mjs`
+— is **fixed**, and the guard above prevents the class.
+
+### 12.2 Field run — Designer
+
+[docs/field-run-designer.md](field-run-designer.md). The product was pointed at a
+TypeScript monorepo it did not author. At the pre-fix commit `6e55c0f0` its opening
+host selection clipped openings to a wall metres away: 43 anomalies, `maxDepthOff`
+4.639 m, `Door 09-lintel` a 0.90 × 18.66 m strip. At the fix commit `9095f188` the same
+property check is clean (0 anomalies, 0.025 m). Case `DT-260920-c019d0` (cause hash
+`052d9f5e20eb`) was filed through the gate with a passing control; no code was changed.
+The bug is **silent** — the pre-fix revision's own suite is green — so it is an example
+of the oracle-free class, where the host must author the check the repo lacks.
+
+**Still proposed, not shipped:** the causal-closure probe (L4), `spectrum.mjs`,
+`shrink.mjs`, and the Tier-2 benchmark result. The full plan, with the four sibling
+projects it was learned from, is
+[implementation.md](implementation.md).
+
+---
+
+## 13. Invariants and the change protocol
+
+The non-negotiables from `AGENTS.md`, and where they are enforced:
+
+| Invariant                                             | Enforced by                                                                                            |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| The `ducktective` contract has one `SKILL.md`         | `scripts/skill-single-source.test.mjs` (other skills are allowed; a second `name: ducktective` is not) |
+| Nothing executes without `--yes`                      | dry-run branches in `bisect.mjs`, `run_check.mjs`, `check.mjs`; exit 3                                 |
+| A verdict is arithmetic plus a discrimination receipt | `lib/verdict-policy.mjs`, with refusals in `policyViolations()` and a parity test                      |
+| The store is append-mostly, one line per id           | `writeCase()` upsert + `readStore()` corrupt-line preservation                                         |
+| No claim without a check                              | `npm test` and `npm run eval`; `write_case.mjs` refuses unearned verdicts                              |
+| Real measurement outranks product work                | not code-enforced; a policy                                                                            |
+
+Change protocol, from the parts that have already bitten:
+
+- **The verdict rule is one module.** Change `lib/verdict-policy.mjs`, and run
+  `verdict-policy.test.mjs`: it asserts the schema enums and the policy sets agree and
+  that `classifyVerdict()` and `candidateViolations()` agree across a table of runs.
+- **Data shape changes in the schema and renderer together** (`case-file.schema.json`
+  ↔ `renderMarkdown`), or the Markdown mirror silently drops a field.
+- **New runners need parser tests and a corpus case.** A runner format that reports its
+  location on one line is not a runner that printed no traceback; that lesson cost a
+  real reproduction twice.
+- **New shipped tools must be named in `SKILL.md` and in this file.** The single-source
+  guard fails otherwise, because an undocumented tool is a tool nobody runs.
+- **A harness is verified, not guessed.** Add one to `bench/agents.mjs` only after its
+  headless flags are checked against its docs, with an adapter and a test; until then
+  `--agent-cmd` is the escape hatch. A guessed flag is a wrong measurement.
+- **Keep `docs/` tracked.** Never add `docs/` to an ignore file; `docs/architecture.md`
+  is read by the guard suite, and `git add -f docs` is the repair, not the ignore rule.
