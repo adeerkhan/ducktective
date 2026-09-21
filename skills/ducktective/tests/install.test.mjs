@@ -104,18 +104,18 @@ test("--target resolves to the folder each agent actually scans", (t) => {
   };
   assert.equal(forTarget("claude"), join(where, ".claude", "skills", "ducktective"));
   assert.equal(forTarget("opencode"), join(where, ".config", "opencode", "skills", "ducktective"));
-  // The retired targets stay refused: accepting a name would promise an install
+  assert.equal(forTarget("agents"), join(where, ".agents", "skills", "ducktective"));
+  // The retired target stays refused: accepting a name would promise an install
   // for an agent whose scan path nobody has verified.
-  for (const gone of ["codex", "agents"])
-    assert.equal(
-      spawnSync(process.execPath, [INSTALL, "--target", gone, "--dry-run"], {
-        encoding: "utf8",
-        windowsHide: true,
-      }).status,
-      2,
-      `--target ${gone} is retired and must be refused, not guessed`,
-    );
-  for (const target of ["claude", "opencode"])
+  assert.equal(
+    spawnSync(process.execPath, [INSTALL, "--target", "codex", "--dry-run"], {
+      encoding: "utf8",
+      windowsHide: true,
+    }).status,
+    2,
+    "--target codex is retired and must be refused, not guessed",
+  );
+  for (const target of ["claude", "opencode", "agents"])
     assert.ok(
       !forTarget(target).startsWith(process.cwd()),
       `the ${target} target must not resolve inside the checkout`,

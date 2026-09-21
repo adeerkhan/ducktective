@@ -623,8 +623,10 @@ flowchart TD
 ```
 
 Recorded on the candidate as `blind_check` (`verdict`, `check`, `exit_code`,
-`evidence`). `write_case.mjs` refuses a `confirmed` whose `blind_check.verdict` is
-not `"confirmed"`; a non-reproduction is filed `unreplicated`, never `falsified`.
+`evidence`). A blind check that ran and disagreed is binding: the standing verdict
+must be `unreplicated`, never `falsified`. Blind is **not** required to file a local
+`confirmed` — it is the independent receipt that makes a cause **reportable**, the
+merge-grade claim (`caseReportability`).
 
 **What each part proves, and what it does not.**
 
@@ -644,10 +646,13 @@ not `"confirmed"`; a non-reproduction is filed `unreplicated`, never `falsified`
   `falsified`: the first run may still be right about a check that happened not to
   generalize.
 
-Default-on, deliberately: the failure this guards (a confident check about
-nothing) is silent, so an opt-in flag is skipped exactly when it is needed. A case
-cannot reach `confirmed` from one context. Same machine and working tree
-throughout, so this tests authoring independence, not environmental independence.
+Not required for every `confirmed`, deliberately. A local `confirmed` (the check
+agreed and a control or probe discriminated) is a real cause you may act on; the
+blind re-derivation is reserved for the claim that carries more weight —
+**reportable**, the merge-grade cause you would stake a review on. Spending it on
+every bug is how the strongest receipt becomes a step the host skips. Same machine
+and working tree throughout, so this tests authoring independence, not environmental
+independence.
 
 ### 6.6 Recording, `--verify`, and evidence
 
@@ -1024,7 +1029,7 @@ Measurement-integrity work, from [implementation.md](implementation.md) Phase 0:
 | Derived cause-confidence + reportable gate | `caseReportability()`, `candidateViolations()`                            | A confirmed cause below the floor cannot be filed as one; surfaced in `write_case.mjs` output and the Markdown mirror                                                      |
 | Cause identity and recurrence              | `causeIdentity()`, `causes.jsonl`, `--causes`                             | A repeated root cause is a recurrence count, not a near-duplicate row                                                                                                      |
 | Probe attempt receipts                     | `probe_attempts`, `probe_artifact`                                        | The artifact rate (C7) is computable from the store instead of discarded                                                                                                   |
-| Blind-check receipt (E2)                   | `run_check.mjs --blind`, `blind_check`, the `unreplicated` verdict        | The tool executes a second check and refuses `confirmed` without it (default-on); context separation stays the host's obligation — see §6.5                                |
+| Blind-check receipt (E2)                   | `run_check.mjs --blind`, `blind_check`, the `unreplicated` verdict        | The tool executes a second check and makes a cause **reportable** (merge-grade); context separation stays the host's obligation — see §6.5                                        |
 | Mutation canary (Tier 1)                   | `evals/canary.mjs`, `npm run canary`, nightly `canary.yml`                | Ranking regressions surface same-day; 88% cause-hit@1 on the fixture, 25% on this repo's own `bench/report.mjs`                                                            |
 | Retired-tool guard                         | `scripts/retired-tools.test.mjs`                                          | Shipped executable code may not name a retired tool                                                                                                                        |
 | Benchmark instrument                       | `skills/ducktective-bench/`, `bench/`                                     | Materialiser, arm runner with a harness registry (OpenCode verified, stub for CI), C1–C12 arithmetic, all stub-tested. One field run (§12.2); **no two-arm result yet**    |

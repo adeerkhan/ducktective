@@ -42,21 +42,21 @@ const INSTALLED_SKIP = new Set([MANIFEST]);
  *
  * Claude Code reads ~/.claude/skills/<name>. OpenCode reads
  * ~/.config/opencode/skills/<name> (V2 docs: Configure → Skills), and also reads
- * ~/.claude/skills for compatibility, so the Claude target works there too.
- * `--dest` covers a project-local install (.opencode/skills/<name>, committed
- * with the repo) and anything else (Cursor, Copilot, Gemini CLI) that reads a
- * SKILL.md. `.agents/skills` is not a named target — it is another agent's
- * namespace rather than this skill's — but OpenCode reads it for compatibility
- * too, so `--dest ~/.agents/skills/ducktective` reaches both.
+ * ~/.claude/skills and ~/.agents/skills for compatibility. `agents` is the
+ * cross-harness global path (Agent Skills); `--dest` covers a project-local
+ * install (.opencode/skills/<name>, committed with the repo) and anything else
+ * that reads a SKILL.md.
  */
 const TARGETS = {
   claude: () => join(homedir(), ".claude", "skills", SKILL_NAME),
   opencode: () => join(homedir(), ".config", "opencode", "skills", SKILL_NAME),
+  agents: () => join(homedir(), ".agents", "skills", SKILL_NAME),
 };
 
-const USAGE = `usage: install.mjs [--target claude|opencode] [--dest DIR] [--source DIR] [--force] [--dry-run]
-  --target claude     ~/.claude/skills/ducktective (Claude Code, and OpenCode's compat path)
+const USAGE = `usage: install.mjs [--target claude|opencode|agents] [--dest DIR] [--source DIR] [--force] [--dry-run]
+  --target claude     ~/.claude/skills/ducktective (Claude Code; OpenCode reads it too)
   --target opencode   ~/.config/opencode/skills/ducktective (OpenCode, global)
+  --target agents     ~/.agents/skills/ducktective (cross-harness Agent Skills path)
   --dest DIR          an explicit directory; wins over --target.
                       Project-local for OpenCode: --dest .opencode/skills/ducktective
   --force             overwrite files whose contents differ
