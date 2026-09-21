@@ -201,7 +201,7 @@ export function pickCandidate(candidates, wanted) {
 }
 
 /**
- * "Try exactly one candidate hard before escalating" (SKILL.md §Speed).
+ * "Try exactly one candidate hard before escalating" (the skill's one-candidate rule).
  *
  * Escalating before candidate 1 has a verdict is how an investigation turns
  * into a scattergun: three loose theories, no oracle, a confident summary.

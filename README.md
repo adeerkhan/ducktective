@@ -1,28 +1,26 @@
 <div align="center">
-  <img src="assets/ducktective-hero.jpg" alt="Ducktective — find it, fix it, ship it" width="100%">
+  <img src="assets/ducktective-hero.jpg" alt="Ducktective — find it, prove it, fix it" width="100%">
 
   <h1>Ducktective</h1>
 
   <p><strong>No claim without a check.</strong><br>
-  An <a href="https://agentskills.io/">Agent Skill</a> that stops a coding agent from filing a
-  confident, plausible, <em>wrong</em> root cause.</p>
+  An <a href="https://agentskills.io/">Agent Skill</a> that finds the root cause of a failing
+  test — and proves it before anything gets patched.</p>
 
   <p>
     <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
     <a href="CHANGELOG.md"><img alt="Version 0.2.0" src="https://img.shields.io/badge/version-0.2.0-blue.svg"></a>
     <a href="https://agentskills.io/"><img alt="Agent Skills" src="https://img.shields.io/badge/Standard-Agent_Skills-blueviolet.svg"></a>
     <img alt="Node 20.19+" src="https://img.shields.io/badge/Node-20.19%2B-green.svg">
-    <a href=".github/workflows/eval.yml"><img alt="Skill stress run" src="https://github.com/adeerkhan/ducktective/actions/workflows/eval.yml/badge.svg"></a>
   </p>
 
   <p>
     <a href="#what-it-is">What it is</a> ·
-    <a href="#how-it-works">How it works</a> ·
-    <a href="#use-it">Use it</a> ·
     <a href="#install">Install</a> ·
+    <a href="#use-it">Use it</a> ·
+    <a href="#how-it-works">How it works</a> ·
     <a href="#the-tools">Tools</a> ·
-    <a href="docs/guide.md">Guide</a> ·
-    <a href="docs/implementation.md">Plan</a>
+    <a href="skills/ducktective/SKILL.md">Contract</a>
   </p>
 </div>
 
@@ -30,312 +28,119 @@
 
 ## What it is
 
-You hand it a failing command. It runs that command **before it thinks**. Each suspect is
-stated as a hypothesis and tested with the smallest check that could disprove it. The
-verdict is arithmetic over what a process actually returned — never a model grading its own
-work — and the result is a case file a human reads in thirty seconds.
-
-It is a contract the host agent is walked through, not a runtime. It does not index your
-repo, run a server, need an API key, or take a dependency beyond Node's standard library.
+Hand it a failing command. It **reproduces** the failure, tests one suspect at a time with a
+check that could **disprove** it, and calls a cause `confirmed` only when a check that
+actually ran backed it up. You get a case file, not a patch.
 
 ```
-Ducktective, investigate this failing test.
+Ducktective, this test fails — find the cause before proposing a fix.
 ```
 
-> **Honest status — 2026-09-20 (v0.2.0).** It has confirmed real bugs in code it did not
-> write, on the first candidate, surviving a re-run. That is a demonstration, not a rate.
-> **The discovery claim is not a selling point:** traceback order and fail-only coverage
-> reorder information the host already had. What is verified here is the _instrument_: a
-> verdict cannot be filed unless a check that ran agrees with a prediction **and** the check
-> demonstrably depends on the line being accused. The next work is the comparative benchmark
-> — a bare agent versus this — because no number yet shows the loop beats a plain "fix this"
-> prompt. That plan is in [`docs/implementation.md`](docs/implementation.md).
-
----
-
-## How it works
-
-The loop has five steps. Only step 3 is allowed to produce a verdict, and it is arithmetic.
-
-```mermaid
-flowchart LR
-  A["1 · Reproduce<br/>the exact failing command"] --> B["2 · Candidates<br/>traceback + fail-only coverage, max 5"]
-  B --> C["3 · Falsify<br/>one hypothesis, one check, one control"]
-  C --> D{"check agrees and<br/>discriminates?"}
-  D -->|confirmed| E["4 · Case file<br/>JSONL + 30-second Markdown"]
-  D -->|falsified / inconclusive| B
-  E --> F["5 · Store<br/>recurrence-counted by cause"]
-```
-
-1. **Reproduce** — the hard gate. Run the exact command; capture exit code, output,
-   traceback, and coverage if the repo produces it. No in-repo evidence means `error`;
-   symptom absent means `does_not_reproduce` and **stop**.
-2. **Candidates** — deliberately cheap: traceback frames nearest the fault, plus lines the
-   failing run covered and a passing run did not. Capped at five. No graph.
-3. **Falsify** — one candidate at a time: a one-line hypothesis, the smallest executable
-   check, a control that must pass, and a **mutation probe** that neuters the accused line
-   on a scratch worktree and re-runs. A check whose outcome does not move never touched that
-   line, and the verdict says so (`inconclusive_vacuous`) instead of confirming.
-4. **Case file** — the product. A JSON line plus a Markdown mirror, written by a tool that
-   **refuses unearned verdicts**: a verdict with no executed check, a check that contradicts
-   its own exit code, or a patch before a confirmed cause.
-5. **Store** — per repo, append-mostly, one line per case id, and now deduplicated by
-   **cause identity**: a repeated root cause becomes a recurrence count, not a near-duplicate.
-
-Read [`docs/guide.md`](docs/guide.md) for a full worked walkthrough, and
-[`docs/architecture.md`](docs/architecture.md) for the implementation and its limits.
-
----
-
-## Use it
-
-One skill, five scripts. The host agent loads `ducktective` when the task matches its
-description, or you name it outright — _"Use the Ducktective skill: this test has been
-failing since Tuesday."_ In OpenCode the skill id is `ducktective`; the agent loads it
-through the `skill` tool, so the install is the only setup.
-
-| Situation                  | Ask for                                                                                                    | What actually runs                                                           |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| A test is red              | "this test fails — find the cause before proposing a fix"                                                  | `reproduce` gates it, then `run_check` falsifies leads one at a time         |
-| A stack trace, no test     | paste the trace: "where does this come from?"                                                              | `reproduce` parses it; a check still has to run before anything is confirmed |
-| It worked last release     | "it worked at v1.2, broken now"                                                                            | `bisect` prices the walk and names the first bad commit                      |
-| You already suspect a line | `check.mjs --claim "app.py:7 drops the last row" --repro … --check … --predict fail --control … --blind …` | one command, an evidence box and a letter grade                              |
-| You cannot reproduce it    | "here is the symptom"                                                                                      | the gate stops at `does_not_reproduce` instead of guessing                   |
-| The same bug, again        | `write_case.mjs --causes`                                                                                  | the recurrence index, by root cause                                          |
-
-Any agent that can run a shell command can use the scripts directly — the skill is a
-convenience, not a runtime:
-
-```bash
-# from an installed skill, or straight from a clone
-node .opencode/skills/ducktective/scripts/reproduce.mjs --cmd "npm test" --yes
-node .opencode/skills/ducktective/scripts/run_check.mjs --file .ducktective/draft.json \
-  --candidate 1 --predict fail \
-  --cmd "node --test tests/totals.test.mjs" \
-  --control "node --test tests/health.test.mjs" \
-  --blind "node --test tests/invariants.test.mjs" --yes
-```
-
-The agent is held to these rules, not asked politely:
-
-1. **Reproduce first.** No in-repo evidence is `error`, not a cause.
-2. **One candidate hard before escalating.** An `inconclusive` lead does not unlock the next.
-3. **A matching prediction is not enough.** `confirmed` needs a passing control _or_ a
-   flipped probe — a check that never touches the accused line agrees with any prediction.
-4. **A second, independently written check** (`--blind`) must also reproduce the claim, or it
-   is filed `unreplicated`, not `confirmed`.
-5. **The store refuses unearned verdicts.** A hand-typed verdict, a verdict that contradicts
-   its own exit code, or a patch before a confirmed cause cannot be written down.
-
-The output is not a patch. It is a confirmed cause at `file:line`, a Markdown case file a
-human reads in thirty seconds, and a JSONL line the next investigation can read.
+No server, no API key, no dependencies beyond Node. It drives whatever test runner your repo
+already uses.
 
 ---
 
 ## Install
 
-From a clone — two commands, no dependencies:
-
 ```bash
 git clone https://github.com/adeerkhan/ducktective && cd ducktective
-node skills/ducktective/bin/install.mjs --target claude     # Claude Code
-node skills/ducktective/bin/install.mjs --target opencode   # OpenCode, global
+node skills/ducktective/bin/install.mjs --target opencode   # or --target claude
 ```
 
-| Target              | Installs to                                                             |
-| ------------------- | ----------------------------------------------------------------------- |
-| `--target claude`   | `~/.claude/skills/ducktective`                                          |
-| `--target opencode` | `~/.config/opencode/skills/ducktective` (OpenCode's global skills dir)  |
-| `--dest <dir>`      | anywhere else — Cursor, Copilot, Gemini CLI, or a project-local install |
+| Target              | Installs to                                                                  |
+| ------------------- | ---------------------------------------------------------------------------- |
+| `--target claude`   | `~/.claude/skills/ducktective`                                               |
+| `--target opencode` | `~/.config/opencode/skills/ducktective`                                      |
+| `--dest <dir>`      | anywhere else — e.g. `.opencode/skills/ducktective` to commit it with a repo |
 
-**OpenCode** discovers skills in `~/.config/opencode/skills` (global) and `.opencode/skills`
-(project, searched from the current directory up to the project root); the skill id is the
-directory name, `ducktective`. It also reads `~/.claude/skills` for compatibility, so
-`--target claude` works in OpenCode too. To share the skill across a team, install it into
-the repo and commit it:
+Restart your agent and it is available by id `ducktective`. Claude Code and OpenCode both find
+it; OpenCode also reads `~/.claude/skills`. Re-running updates the files it wrote and refuses
+only the ones you edited by hand.
+
+---
+
+## Use it
+
+Ask in plain language — the skill loads itself when the task matches. You can also name it:
+_"Use the Ducktective skill: …"_.
+
+| You have                     | Say                                                       |
+| ---------------------------- | --------------------------------------------------------- |
+| A red test                   | "this test fails — find the cause before proposing a fix" |
+| A stack trace, no test       | paste it: "where does this come from?"                    |
+| Something that worked before | "it worked at v1.2, broken now"                           |
+| A suspected line             | "I think `app.py:41` is wrong — check it"                 |
+| A bug you cannot reproduce   | "here is the symptom; it does not fail for me"            |
+
+Any harness that can run a shell command can call the tools directly; the skill is a
+convenience, not a runtime. Paths are relative to the installed skill folder:
 
 ```bash
-node skills/ducktective/bin/install.mjs --dest .opencode/skills/ducktective
-git add .opencode/skills/ducktective
+node scripts/reproduce.mjs --cmd "npm test" --symptom "checkout test fails" --out .ducktective/draft.json
+node scripts/run_check.mjs --file .ducktective/draft.json --candidate 1 --predict fail \
+  --control "npm test -- --testNamePattern=health" --blind "<a second, independent check>" --yes
 ```
 
-`claude` and `opencode` are the two named targets, each checked against its agent's
-documentation. Everything else takes `--dest`, which was always the general case. The
-installer copies `SKILL.md`, the case-file schema, and `scripts/` — never the tests or
-itself. It **won't clobber a skill file you have edited**: a re-install after an upgrade
-updates the files it wrote, and refuses only the ones you changed by hand (`--force` to
-overwrite those). `--dry-run` prints the plan, and re-running an unchanged install writes
-nothing.
+---
 
-**Requirements:** Node 20.19+ (declared as `engines`). The corpus needs Python for its cases;
-the gate itself drives any test runner, because `--cmd` is just a shell command.
+## How it works
+
+1. **Reproduce** the exact failing command. No in-repo evidence is `error`, not a cause.
+2. **Bisect** history if it is a regression, to name the first bad commit.
+3. **Falsify** one candidate: a one-line hypothesis, the smallest check that could disprove
+   it, a control, a probe that neuters the accused line, and an independent blind check.
+4. **Emit** the case file — `.ducktective/cases.jsonl` plus a Markdown mirror.
+5. **Stop.** It does not patch.
+
+A `confirmed` verdict is refused unless a check that ran agreed with the prediction, a control
+passed or the accused line flipped, **and** a second, independently written check reproduced
+it. A hand-typed verdict cannot reach the store.
 
 ---
 
 ## The tools
 
-Five scripts, zero dependencies, plain `node`. Any agent that can run a shell command can use
-them directly; `check.mjs` composes the other four into one command that grades a claim.
+| Tool             | What it does                                             |
+| ---------------- | -------------------------------------------------------- |
+| `reproduce.mjs`  | the gate — runs the command and seeds candidates         |
+| `bisect.mjs`     | first bad commit, priced and bounded                     |
+| `run_check.mjs`  | the oracle, control, probe and blind check → one verdict |
+| `write_case.mjs` | the store; refuses unearned verdicts                     |
+| `check.mjs`      | all of the above in one graded command                   |
 
-| Tool             | What it does                                                                                                                                                                                       | Exit codes                                                         |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `reproduce.mjs`  | The gate. Runs the command, parses the traceback, seeds candidates.                                                                                                                                | `0` reproduced · `1` does not reproduce (**stop**) · `2` never ran |
-| `bisect.mjs`     | Walks history by binary search (O(log n) runs) for the first bad commit, its hunks, and whether your claim sits inside them. Prices the walk and refuses above `--budget`.                         | `0` found · `1` refused · `2` inconclusive · `3` dry run           |
-| `run_check.mjs`  | Executes the oracle and decides `confirmed`/`falsified` from `--predict` against the exit code. `--control`, `--probe`, `--blind` (required for `confirmed`), `--verify`, `--depth`, `--escalate`. | `0` recorded · `1` refused · `2` not evaluable · `3` dry run       |
-| `write_case.mjs` | The store and the enforcement point. Refuses unearned verdicts; indexes causes for recurrence. `--causes` prints the index.                                                                        | `0` stored · `1` refused · `2` bad input                           |
-| `check.mjs`      | One command that composes the four and prints an evidence box plus a letter grade.                                                                                                                 | `0` report produced (including negative grades) · `3` dry run      |
-
-### What `write_case.mjs` refuses
-
-The discipline has to survive the model that runs it, so these are type errors rather than
-advice:
-
-- a `confirmed` or `falsified` verdict with no captured output, or with no recorded exit code
-  — that is, **a verdict typed by hand**
-- a verdict that contradicts its own check (`predicted pass, exit 1 ⇒ falsified`)
-- `confirmed` with no discrimination receipt — no passing control and no flipped probe
-- `confirmed` with no confirming blind re-derivation — the second check is executed by
-  `run_check --blind` and recorded with its exit code, not typed in; a non-reproduction is
-  filed `unreplicated`
-- a pass prediction confirmed without a flipped probe (a passing control cannot rule out an
-  always-pass check)
-- candidates on a case that did not reproduce
-- `high`/`medium` confidence, a `confirmed_cause`, or a patch suggestion before the status is
-  `confirmed` and the derived cause-confidence clears the floor
-- a case id that would escape the store directory, and any field the schema does not have
+The whole contract the agent follows is one file: [`skills/ducktective/SKILL.md`](skills/ducktective/SKILL.md).
 
 ---
 
-## The receipt ladder (roadmap)
+## Honest status
 
-Today a verdict proves the check is _sensitive_ to a line. The refinement in
-[`docs/implementation.md`](docs/implementation.md) promotes a claim through independent,
-mechanical rungs — prediction → control → line-neuter → independent replication → a
-**reversible repair probe** (repair it and the repro passes; re-break it and the repro fails)
-— each recorded with a derived cause-confidence, and only then reportable. Everything beyond
-the first three rungs is a proposal until the benchmark says the loop pays.
-
----
-
-## A case file
-
-`write_case.mjs` writes `.ducktective/cases.jsonl` (one line per case, updated in place),
-`.ducktective/causes.jsonl` (one line per distinct root cause), and
-`.ducktective/cases/<id>.md` for humans. This is real output from the tools against a
-self-authored fixture, trimmed for width:
-
-```markdown
-# DT-260914-6dc0aa — totals drop the last row
-
-**Status:** `confirmed` · **Confidence:** high · **Cause confidence:** 0.5 · **Opened:** 2026-09-14T15:35:49Z
-**Reproduction:** `python -m unittest -q test_totals` → `reproduced` in 106 ms (exit 1)
-
-### 1. `app.py:7 total()` — confirmed
-
-_Hypothesis:_ end defaults to len(rows)-1, so rows[end + 1] is always one past the last index
-_Evidence:_ check: exit 1 · IndexError: list index out of range · control: exit 0
-
-**Confirmed cause:** app.py:7 — with end defaulting to len(rows)-1, rows[end+1] is always one
-past the last index
-```
-
-The JSONL is machine-readable on purpose: another skill can read the same file, and `cat` or
-`grep` is the reader. There is no website to open it in.
+It has confirmed a real bug in code it did not write, surviving a re-run. That is a
+demonstration, not a rate: no measurement yet shows the loop beats a plain "fix this" prompt.
+What is verified is the **instrument** — a verdict cannot be filed unless the arithmetic over
+real receipts supports it. The comparative benchmark is built but **not yet run**. Discovery
+(traceback order, fail-only coverage) mostly reorders what the host already had; the product
+is the forced verification.
 
 ---
 
-## How it is checked
+## Learn more
 
-| Layer              | Command                          | What it can prove                                                                                                                                                |
-| ------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Guards             | `npm test`                       | prose cannot drift from code: one `SKILL.md`, every shipped tool documented, the architecture reference tracked, no shipped file naming a retired tool           |
-| Unit + integration | `npm test`                       | frame order, the verdict policy and its schema parity, id containment, policy refusals, tree-kill, bounded capture, installer behaviour, cause recurrence        |
-| Behaviour corpus   | `npm run eval`                   | the tools do what the docs say against real pytest/unittest/`node:test`/`coverage.py` runs — **self-authored cases**, so a regression net, not evidence of value |
-| Mutation canary    | `npm run canary`                 | candidate ranking did not regress since last night — **mutants are easier than real faults**, so a regression alarm, never product evidence                      |
-| Benchmark          | `npm test` (`bench/`)            | the benchmark instrument (materialiser, harness registry, arm runner, C1–C12) is correct and stub-proven — **not** a result; no real-model run yet               |
-| Run log            | `node evals/runlog.mjs --report` | whether it helps real bugs: M1–M4, each row tagged `real` or `constructed`                                                                                       |
-
-Two rules hold this section together. A metric nobody can record is a guess with a name, so
-every metric in the plan has a column and an instrument. And an unrecorded answer stays blank
-rather than defaulting to "no" — `no data [0/3]` and `0% [3/3]` are different facts about the
-world.
-
----
-
-## Repository layout
-
-```
-skills/ducktective/       the product
-  SKILL.md                the whole contract, in one file
-  case-file.schema.json   shape of a case file
-  scripts/                the four tools + check.mjs + lib/ (exec, args, case file, verdict policy)
-  bin/install.mjs         the installer
-  tests/                  tool tests + fixtures
-skills/ducktective-bench/ the instrument: how to run the benchmark
-bench/                    the benchmark engine (materialise, run, report, harness adapters)
-docs/                     design, architecture reference, guide, implementation plan,
-                          prior-art critique, and the objection this project was judged against
-evals/                    behaviour corpus, runner, results, run ledger
-scripts/                  repo-level guards (single source, retired tools, run log)
-assets/                   the hero image
-.github/workflows/        eval.yml — the corpus, on real pytest and coverage.py
-ref/                      gitignored research clones, never imported
-```
-
-One deliverable, and the repo is smaller for it. The website, the npm workspace, the plugin
-manifests and two installer targets were deleted on 2026-09-15: presentation built before the
-claim it was presenting had evidence behind it.
+- [`skills/ducktective/SKILL.md`](skills/ducktective/SKILL.md) — the contract
+- [`docs/guide.md`](docs/guide.md) — a worked walkthrough
+- [`docs/architecture.md`](docs/architecture.md) — how it is built, and its limits
+- [`docs/ducktective-design.md`](docs/ducktective-design.md) — why it is shaped this way
 
 ## Development
 
 ```bash
-npm install        # once: eslint + prettier, that is all
-npm test           # guards + the skill's tool tests + benchmark smoke tests
-npm run eval       # the behaviour corpus (needs pytest + coverage.py)
+npm install        # once: eslint + prettier
+npm test           # guards + the skill's tool tests
+npm run eval       # behaviour corpus (needs pytest + coverage.py)
 npm run lint && npm run format:check
 ```
 
-No dev/build/preview/typecheck. The scripts are plain `.mjs` with zero dependencies, so
-`node --check` and the test suite are the type layer, and nothing needs deploying.
-
----
-
-## FAQ
-
-**Does it fix the bug?** No. It stops at a confirmed cause and labels any patch suggestion
-secondary. Fixing is the host agent's job.
-
-**Why isn't it an MCP server?** A server is a daemon, a port, and a lifecycle. A skill that
-shells out works in every agent that can run `python -m pytest`, and its output is a file you
-can `grep`.
-
-**Which agents does it work with?** Any that can read a `SKILL.md` and run shell commands.
-Named installs for Claude Code and OpenCode; everything else takes `--dest`, including a
-project-local `.opencode/skills/ducktective` you commit with the repo. The scripts are plain
-Node with zero dependencies, so an agent without skill support can still run them directly.
-
-**Why does `run_check` need `--yes`?** Because the check is a model-authored command run
-through your shell in your repo. A denylist would be theatre — any `&&` defeats it — so you
-see the exact command and approve it instead.
-
-**What if the real fault is in a dependency?** The gate reports `error` with the reason rather
-than inventing a reproduction, and ranks out-of-repo frames last.
-
-**Which runners are supported?** Any command. Parse-verified today: pytest,
-`python -m unittest`, plain Python scripts, `node --test`, plain `node`. Coverage:
-`coverage.py` JSON, with `--baseline` for the fail-only signal.
-
-**Why is the honesty so aggressive?** Because the failure being fixed is an unearned confident
-claim. A README that oversold this tool would be the product's own bug, in the one place
-nobody runs a test.
-
----
-
-## Contributing
-
-Issues and PRs welcome, and the most useful contribution is a failing command from a repo you
-can run. The rules live in [`skills/ducktective/SKILL.md`](skills/ducktective/SKILL.md), which
-is the only copy in the repo — a test refuses a second one.
+Plain `.mjs`, zero dependencies, nothing to build or deploy.
 
 ## License
 

@@ -1,80 +1,127 @@
 ---
 name: ducktective
-description: Investigate a bug with a forced verification loop. Use when a test fails, a stack trace appears, the user says something is wrong, or they ask to find a root cause. Reproduce first, falsify with a runnable check, emit a structured case file. Do not patch until a cause is confirmed or the case is explicitly unverified.
+description: Find the root cause of a failing command and prove it before you patch. Use when a test fails, CI is red, a stack trace or error appears, something that worked stopped working, or the user asks to find a root cause.
 ---
 
 # Ducktective
 
-No claim without a check.
+No claim without a check. You are not the fixer: you own **reproduction, falsification, and the case file**. Localization may come from stack frames, coverage, or your own search.
 
-You are not the localizer, the graph engine, or the fixer. You are a prosecutor the host agent is forced to follow. Localization may come from stack frames, fail-only coverage, or the host's own search. You own three things: reproduction, falsification, and the case file.
+## When to use
 
-## Hard rules
+- a test fails, CI is red, or a build breaks
+- a stack trace or error appears and the cause is not obvious
+- something worked before and stopped (a regression)
+- the user asks "why is this failing" / "find the root cause"
 
-1. Reproduce first. No exceptions. Run the exact failing command / test. Capture exit, stdout, stderr, stack, and coverage if available.
-2. If it does not fail, write `status: does_not_reproduce` and **stop**. Do not "improve" the code. Do not suggest refactors. The ticket may be stale.
-3. Cap candidates at 3–5. Default sources: stack frames + lines covered by the failing run and not by passing runs, and — if the bug is a regression, i.e. some older commit passed — the commit `bisect.mjs` blames. If your host has a code-graph tool, run it once and add its hits as candidates yourself — Ducktective ships none. Never more than five. A bisected commit outranks a guessed one: it is a fact obtained by search, not an opinion about a traceback.
-4. For each candidate, in order:
-   - One-line hypothesis: "this function should return X under condition Y, but the failing run shows Z."
-   - The smallest possible check (assertion, existing test, or a 5-line script) that would **disprove** the hypothesis.
-   - Run the check.
-   - Oracle holds → `falsified`. Demote. Next candidate.
-   - Oracle fails in the predicted way → `confirmed`. Stop. That is the cause.
-5. A check that also fails on a known-good path is a bad check, and a check whose
-   outcome does not move when the accused line is neutered never touched that line.
-   Rule 5 cuts both ways: `confirmed` needs a receipt — a `--control` that passed or a
-   `--probe` that flipped — not just an agreement with your own prediction. Prefer
-   oracles that distinguish failing from passing.
-6. Never confirm a cause in prose. Never skip the check because the hypothesis "looks obvious."
-7. Do not write a production patch until a cause is `confirmed`. A suggested patch is optional and labeled secondary.
-8. Always emit the case file below. Never free-prose as the final answer.
+Not for: implementing a fix whose cause is already known, refactors, or new features.
 
-## Tools
+## Workflow
 
-- **`check.mjs`** composes reproduction, optional bisect, an explicit claim check,
-  probe and re-run into one evidence table. Use `--claim "file:line explanation"`
-  and `--repro "command"`; add `--check "command" --predict pass|fail` to test the
-  claim. Review the dry-run plan, then pass `--yes`. Its letter grade measures
-  evidence completeness, not the probability that the cause is correct. A bisect
-  hunk miss is not a disproof of an older defect exposed by a newer change.
+### 1. Reproduce
 
-Zero-dependency scripts in `scripts/` do the parts that must not be improvised:
+Run the exact failing command. Do not guess, and do not fix anything yet.
 
 ```bash
-node scripts/reproduce.mjs --cmd "python -m pytest -q" --symptom "<what was reported>" --out .ducktective/draft.json
-node scripts/bisect.mjs --cmd "python -m pytest -q" --claim app.py:41 --budget 300 --yes   # only if it is a regression
-node scripts/run_check.mjs --file .ducktective/draft.json --candidate 1 --predict fail --probe --yes
+node scripts/reproduce.mjs --cmd "<failing command>" --symptom "<what was reported>" --out .ducktective/draft.json
+```
+
+| exit | outcome              | next                                                                |
+| ---- | -------------------- | ------------------------------------------------------------------- |
+| 0    | reproduced           | step 2                                                              |
+| 1    | `does_not_reproduce` | **stop** — the ticket may be stale; write the case and hand it back |
+| 2    | `error`              | the command never ran in this repo — fix the command, not the code  |
+
+`draft.json` now holds the reproduction and seeded `candidates`: traceback frames nearest the fault, plus fail-only coverage when you pass `--coverage` / `--baseline`. If your host has a code-graph tool, run it once and add its hits yourself — Ducktective ships none. **Never more than five candidates.**
+
+### 2. Bisect — only if it is a regression
+
+If an older commit passed, find where it broke. `bisect.mjs` walks history in O(log n) runs, prices the walk first, and needs `--yes`.
+
+```bash
+node scripts/bisect.mjs --cmd "<failing command>" --claim <file:line> --budget 300 --yes
+```
+
+A blamed commit outranks a guessed one — it is a fact from search, not an opinion about a traceback. If nothing older passed (`no-good-ref`), skip this step: a bug that was always there is not a regression.
+
+### 3. Falsify — one candidate at a time
+
+For the top candidate in `draft.json`:
+
+1. State a one-line hypothesis: "this function should return X under Y, but the failing run shows Z."
+2. Write the smallest check that would **disprove** it — an assertion, an existing test, or a short script. Prefer a check that distinguishes the failing path from a known-good one.
+3. Run it with a control and a blind re-derivation:
+
+```bash
+node scripts/run_check.mjs --file .ducktective/draft.json --candidate 1 \
+  --predict fail \
+  --cmd "<the check>" \
+  --control "<known-good command that must pass>" \
+  --probe \
+  --blind "<a second, independently written check>" \
+  --yes
+```
+
+| verdict                | meaning                                                                     | next                                 |
+| ---------------------- | --------------------------------------------------------------------------- | ------------------------------------ |
+| `confirmed`            | failed as predicted, a receipt discriminated, the blind check reproduced it | **stop** — this is the cause         |
+| `falsified`            | the check held; the hypothesis is wrong                                     | next candidate                       |
+| `inconclusive_vacuous` | the check did not move when the accused line was neutered                   | it never touched that line — rewrite |
+| `inconclusive`         | timed out, could not run, or the control failed too                         | fix the check                        |
+| `unreplicated`         | the blind re-derivation did not reproduce the claim                         | rewrite the blind check, or file it  |
+
+`--probe` neuters the accused line on a scratch `git worktree` and re-runs the check there. `--blind` executes a second, independently written check and is **required** for `confirmed` — a claim filed by a single context is refused. Without `--yes` the tools print the exact commands and stop.
+
+**Try one candidate hard before escalating.** An `inconclusive` lead does not unlock the next; pass `--escalate` only to move on knowingly.
+
+### 4. Emit the case file
+
+```bash
 node scripts/write_case.mjs --file .ducktective/draft.json
 ```
 
-- **`reproduce.mjs`** — the gate. Exit 0 = reproduced (continue); 1 = does not reproduce (**stop**); 2 = the command never ran, timed out, or failed before executing anything in this repo, which is not a verdict. It fills `reproduction` from a real run and seeds `candidates` from the traceback, nearest fault first, plus fail-only coverage when you pass `--coverage` / `--baseline`. Leads from outside the repo rank last. It does not hypothesize: that is your job.
-- **`bisect.mjs`** — the only tool here that produces information the host did not already have. Give it the reproducing command and it walks history with `git rev-list` + a binary search (O(log n) runs), returning the first bad commit, the files and hunk ranges it touched, and whether your `--claim` sits inside one of them — `claim_in_commit: yes|no|n-a`. It finds a good ancestor by doubling back (`HEAD~1,2,4…`) and reports `no-good-ref` when nothing older passed, because a bug that was always there is not a regression and bisect cannot answer it. It prices the walk first (`measured_run_ms`, `estimated_runs`) and refuses above `--budget`; nothing moves without `--yes`. It runs in **your working tree** (a scratch worktree would not have the untracked `.venv` / `node_modules` the repro needs), so it refuses a dirty tree and restores your branch afterwards. Exit 0 found · 1 refused · 2 inconclusive · 3 dry run.
-- **`run_check.mjs --verify`** — re-executes a decided candidate's own oracle and records whether it survived, without letting the second run rewrite the claim. A `confirmed` whose `verified_verdict` says `falsified` cannot be stored: a claim that fell over on re-test is not a finding.
-- **`--probe`** closes the hole the prediction and the control both leave open. A matching `--predict` proves the check _agrees_ with the hypothesis and a passing `--control` proves it is not always-fail; neither proves the outcome depends on the line being accused — an always-pass oracle will confirm any prediction, with full provenance, and `write_case.mjs` used to file it. So `--probe` checks out a scratch `git worktree` at HEAD, comments the accused line out there, and re-runs the same check. Outcome changed → the check depends on that line. Unchanged → **`inconclusive_vacuous`**, which is not a weaker `confirmed`: it says the check was never about the suspect. The line is deleted, not aborted before, because a check that already fails keeps failing when the code above it dies — that strategy calls every failing check vacuous. And a deletion that breaks the parse or leaves a name undefined is reported `not-run`: "crashed differently" is not "behaved the same". The worktree has no untracked source and no installed dependencies, so the unmutated worktree run is compared against the recorded outcome first; if they disagree, the probe refuses to conclude rather than measuring the environment. Your tree is never written to, and a candidate whose file has uncommitted edits is refused.
-- **The blind re-derivation (`--blind`, required before a `confirmed`).** The prediction, control and probe are all graded by the same run that wrote the check, so none of them can see a check that is confidently about nothing. Re-author the check in a **fresh context** given only `symptom`, `reproduction`, the candidate `location` and the recorded `check` — no chat history, no reasoning trace — and pass it as `run_check.mjs --blind "<command>"`. `run_check` executes and records it as `blind_check`; a non-reproduction demotes the verdict to `unreplicated` (held, not replicated), and `write_case.mjs` refuses a `confirmed` without a confirming receipt. It is default-on because the failure it guards is silent. Honest limit: the tool proves the second check **ran** — it cannot prove you wrote it context-free, so the separation is your obligation, not the tool's.
-- **`run_check.mjs`** — executes the oracle and decides the verdict by arithmetic: `--predict fail` with a non-zero exit is `confirmed`; `--predict fail` with exit 0 is `falsified` (the oracle held, demote). It refuses a candidate with no hypothesis, one that already has a verdict, and any candidate ahead of an unfinished one — and an `inconclusive` or `inconclusive_vacuous` lead (timed out, unrunnable, control also failed, or a probe showing the check never touched the line) does not count as tried hard, so the next one stays shut unless you pass `--escalate`. That is the "one candidate hard before escalating" rule, enforced. `--control <cmd>` names a known-good path; when the control fails too the verdict is `inconclusive`, because a check that breaks everywhere distinguishes nothing (rule 5). A `confirmed` now owes a receipt of that kind: a passed `--control` or a flipped `--probe`. Prediction-plus-exit-code alone only proves the check agreed, and an always-pass oracle agrees with anything. Once a candidate is `confirmed` the next one is refused too — the doc says confirmed means stop — and `--depth 1` forbids escalation outright. **Nothing runs without `--yes`**, and this is **not a sandbox** — it is a model-written command in your repo, printed in full first so a human reads it. Exit 3 = dry run; exit 1 also covers a draft whose `id` could not be a safe filename.
-- **`write_case.mjs`** — the store, and therefore the enforcement point. It refuses a verdict with no recorded exit code, a verdict that contradicts its own exit code, candidates that survived a non-reproducing run, strong confidence or a patch before a confirmed cause, more than five candidates, and unknown fields. A refusal means the investigation is wrong — fix the investigation, not the JSON.
+Writes `.ducktective/cases.jsonl` (one line per case, updated in place) and a Markdown mirror `.ducktective/cases/<id>.md`. **A refusal means the investigation is wrong — fix the investigation, not the JSON.**
 
-## Case file (mandatory)
+### One-shot alternative
+
+`check.mjs` composes the loop into one graded command:
+
+```bash
+node scripts/check.mjs --claim "<file:line> <what it says>" --repro "<failing command>" \
+  --check "<disproving check>" --predict fail --control "<known-good>" --blind "<second check>" --yes
+```
+
+It prints an evidence table and a letter grade. The grade measures evidence completeness, not whether the cause is right.
+
+## Hard rules
+
+1. Reproduce first. No exceptions: run the exact failing command and capture exit, output, stack, and coverage if available.
+2. If it does not fail, write `status: does_not_reproduce` and **stop**. Do not "improve" the code or suggest refactors.
+3. Cap candidates at 3–5, never more. A bisected commit outranks a guessed one.
+4. For each candidate, in order: state a one-line hypothesis; write the smallest check that would disprove it; run it. Oracle holds → `falsified`, demote, next candidate. Oracle fails in the predicted way → `confirmed`, stop.
+5. A check that also fails on a known-good path is a bad check, and a check whose outcome does not move when the accused line is neutered never touched that line. `confirmed` needs a receipt — a `--control` that passed or a `--probe` that flipped — **and** a `--blind` re-derivation.
+6. Never confirm a cause in prose, and never skip the check because the hypothesis "looks obvious."
+7. Do not write a production patch until a cause is `confirmed`. A suggested patch is secondary.
+8. Always emit the case file. Never free-prose as the final answer.
+
+## Case file
 
 ```yaml
 id: DT-<short>
 opened_at: <iso>
 symptom: <one paragraph>
-reproduction:
-  command: <exact>
-  outcome: reproduced | does_not_reproduce | error
-  duration_ms: <n>
-  stdout: <trimmed>
-  stderr: <trimmed>
-  stack: [<frames>]
+reproduction: { command, outcome, duration_ms, stdout, stderr, stack, covered, runner }
 candidates:
-  - location: <file:line function>
-    why: <why this was a candidate>
-    hypothesis: <one line>
-    check: <source>
-    verdict: falsified | confirmed | inconclusive
-    evidence: <what the check printed>
+  - {
+      location: <file:line function>,
+      why,
+      hypothesis,
+      check,
+      predicted,
+      check_exit_code,
+      verdict,
+      evidence,
+    }
 confirmed_cause: <or null>
 leading_hypothesis: <if unverified>
 confidence: high | medium | low | none
@@ -83,23 +130,37 @@ status: open | confirmed | does_not_reproduce | exhausted | unverified
 notes: <one or two sentences>
 ```
 
-Write the same object to `.ducktective/cases.jsonl` in the repo (create the dir). One JSON object per line, one line per case id — an updated case rewrites its own line instead of piling up copies.
+The full shape is `case-file.schema.json` beside this file.
 
 ## Memory
 
-`.ducktective/cases.jsonl` is the record, and it stays readable: `cat` it, grep it, open
-`cases/DT-*.md`. A past `confirmed` is a head start, never a verdict — it does not skip the
-reproduction gate for the case in front of you.
+`.ducktective/cases.jsonl` is the record; `cat` it, grep it, open `cases/DT-*.md`. A past `confirmed` is a head start, never a verdict — it does not skip the reproduction gate for the case in front of you.
 
-The rap-sheet ranking that used to sit on top of it (`query_memory.mjs`) is retired: the
-store has five rows in it, all from the author, and no measurement has ever shown that
-surfacing "nearest previous case" changed a decision. Re-add it when a benchmark shows the
-effect, not before.
+## Common rationalizations
 
-## Speed
+| Rationalization                    | Reality                                                                           |
+| ---------------------------------- | --------------------------------------------------------------------------------- |
+| "The cause is obvious, skip it."   | Obvious causes are wrong often enough to matter. Run the check.                   |
+| "The test is wrong, not the code." | Verify that. If the test is wrong, fix the test — don't silently skip it.         |
+| "It passes locally."               | Reproduce with the same command and environment, or say `does_not_reproduce`.     |
+| "The check agreed, so confirmed."  | Agreement is not discrimination. Add `--control`/`--probe`, then the blind check. |
+| "I'll write the case later."       | The case file is the deliverable. Later is never.                                 |
 
-Try exactly one candidate hard before escalating. Most real bugs die on the first or second check.
+## Red flags
+
+- a verdict with no executed check, or a `check_exit_code` typed by hand
+- `confirmed` with no control, no probe, or no blind receipt
+- a patch proposed before a confirmed cause
+- escalating past a candidate that was never tested
+- more than five candidates
+
+## Verification
+
+- [ ] `reproduce.mjs` ran the exact command and recorded the outcome
+- [ ] every candidate carried a hypothesis and an executed check
+- [ ] `confirmed` carries a discrimination receipt **and** a blind receipt
+- [ ] `.ducktective/cases.jsonl` and the Markdown mirror were written
 
 ## Out of scope
 
-Custom graph databases, suspicion scores, multi-agent debate, monorepos, production telemetry, "industrial emulation." If you need structure, call tree-sitter once and throw the result away after ranking.
+Custom graph databases, suspicion scores, multi-agent debate, production telemetry. If you need structure, call tree-sitter once and throw the result away after ranking.
