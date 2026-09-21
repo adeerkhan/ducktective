@@ -31,7 +31,7 @@ export function wasNotRunnable(result) {
  * would report as "does not reproduce" for a genuinely broken JS repo. Drop the
  * runner's own plumbing so the command behaves as it does in the user's shell.
  */
-function childEnv() {
+export function childEnv() {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (/^NODE_TEST_/i.test(key)) delete env[key];
   return env;

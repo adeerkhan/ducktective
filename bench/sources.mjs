@@ -88,6 +88,8 @@ export function validateInstance(instance) {
     gold.forEach((h, i) => {
       if (!h?.file || typeof h.start !== "number" || typeof h.end !== "number")
         bad.push(`expect.goldHunks[${i}] must be {file, start, end}`);
+      else if (h.start < 1 || h.end < h.start)
+        bad.push(`expect.goldHunks[${i}] must satisfy 1 <= start <= end`);
     });
   return bad;
 }

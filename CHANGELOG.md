@@ -34,7 +34,24 @@ down.
   no receipt. C8 measures the overturn rate in the benchmark.
 - **Benchmark scaffold** (`bench/`): source validation, content-addressed
   job identity, instance-spec validation, and the C1–C12 arithmetic, with smoke
-  tests. The arm runner and corpus materialiser are **not built**.
+  tests. The arm runner and Docker/remote corpus sources are **not built**.
+- **Corpus materialiser** (`bench/materialize.mjs`): clones an instance's repo at
+  its commit into a throwaway directory, then verifies the premise — the gold-hunk
+  files cover real lines and the repro actually fails. A green repro is refused.
+  `local` source only; remote/Docker sources come with their materialisers.
+- **Arm runner** (`bench/run.mjs`): runs each arm (`DT_ARM` = bare or skill) in its own
+  throwaway checkout, then scores the `claim.json` the agent writes against the gold
+  hunks, emitting `results.jsonl` and C1–C12. Proven end-to-end with the model-free
+  `bench/stub-agent.mjs`; a real run needs a host-agent CLI and a corpus.
+- **OpenCode v2 adapter** (`bench/opencode-agent.mjs`): builds the arm prompt (A bare,
+  B told to use the skill) and runs `opencode run --format json --auto [--model p/m]`
+  in the clone, then writes the claim. `DT_DRY_RUN=1` prints the command without
+  calling the model.
+- **Harness registry** (`bench/agents.mjs`) and the **`ducktective-bench` skill**
+  (`skills/ducktective-bench/SKILL.md`): `run.mjs` auto-detects the agent CLI (OpenCode
+  verified; `--agent stub` for CI) and builds the command, so no `--agent-cmd` is needed.
+  The single-source guard now forbids a second `name: ducktective` contract rather than a
+  second skill, since the benchmark is legitimately its own skill.
 - **Tier-1 mutation canary** (`evals/canary.mjs`, `npm run canary`): mutates a target
   module, keeps the mutants its tests kill, and scores whether `reproduce.mjs`'s first
   lead is the line it broke; survivors must return no candidate. 88% cause-hit@1 on

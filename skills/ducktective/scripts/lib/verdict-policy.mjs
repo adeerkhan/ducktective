@@ -232,7 +232,7 @@ export function candidateViolations(cand) {
     }
 
     // The derived rating must clear the reportable floor before a cause is named.
-    const floor = CAUSE_CONFIDENCE_FLOOR[VERDICT.CONFIRMED];
+    const floor = CAUSE_CONFIDENCE_FLOOR[CASE_STATUS.CONFIRMED];
     const confidence = causeConfidence(cand);
     if (verdict === VERDICT.CONFIRMED && confidence < floor)
       bad.push(
@@ -271,7 +271,7 @@ export function causeConfidence(cand) {
  */
 export function blindOverturned(cand) {
   if (!cand) return false;
-  if (cand.verdict === VERDICT.UNREPLICATED) return true;
+  if (cand.verdict === VERDICT.UNREPLICATED) return !!cand.blind_check;
   return (
     cand.verdict === VERDICT.CONFIRMED &&
     !!cand.blind_check &&
@@ -314,7 +314,7 @@ export function caseReportability(c) {
  * for audit; `hash` is the index key.
  */
 export function causeIdentity(c) {
-  const cand = confirmedCandidate(c) ?? (c?.candidates ?? [])[0] ?? null;
+  const cand = confirmedCandidate(c);
   const norm = (s) =>
     String(s ?? "")
       .toLowerCase()

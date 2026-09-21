@@ -235,8 +235,16 @@ test("a confirming blind check is a receipt and raises confidence", () => {
 test("blindOverturn reports whether any candidate was overturned", () => {
   assert.equal(blindOverturn({ candidates: [confirmedCandidateFixture()] }), false);
   assert.equal(
+    blindOverturn({ candidates: [confirmedCandidateFixture(), { verdict: "unreplicated" }] }),
+    false,
+    "an unreplicated record with no blind_check is not an overturn",
+  );
+  assert.equal(
     blindOverturn({
-      candidates: [confirmedCandidateFixture(), { verdict: "unreplicated" }],
+      candidates: [
+        confirmedCandidateFixture(),
+        { verdict: "unreplicated", blind_check: { verdict: "falsified" } },
+      ],
     }),
     true,
   );

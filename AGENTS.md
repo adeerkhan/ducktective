@@ -1,18 +1,18 @@
 # Ducktective
 
-One deliverable: an Agent Skill (a prompt contract, four core programs and one
-composition entry point).
+Two deliverables, one product and one instrument: the `ducktective` skill and the
+benchmark skill that measures it.
 
 ```
-skills/ducktective/SKILL.md   the product: the contract
-skills/ducktective/scripts/   reproduce · bisect · run_check · write_case · check (+ lib/)
-skills/ducktective/bin/       the installer
-bench/                        comparative benchmark scaffold (metrics; arm runner not built)
-docs/                         design v2, landscape (ref-work), reference (architecture),
-                              guide, implementation plan, critique
-scripts/                      repo guards
-evals/                        behaviour corpus, mutation canary, run log
-assets/                       hero image
+skills/ducktective/SKILL.md       the product: the contract (the only `ducktective`)
+skills/ducktective/scripts/       reproduce · bisect · run_check · write_case · check (+ lib/)
+skills/ducktective/bin/           the installer
+skills/ducktective-bench/SKILL.md the instrument: how to run the benchmark
+bench/                            the benchmark engine (materialise · run · report · harness adapters)
+docs/                             design, landscape, reference, guide, plan, critique
+scripts/                          repo guards
+evals/                            behaviour corpus, mutation canary, run log
+assets/                           hero image
 ```
 
 There is no website, no plugin manifest and no npm workspace. Those were deleted on
@@ -37,9 +37,11 @@ The scripts are plain `.mjs`, run with `node`; `node --check` is the type layer.
 
 ## Non-negotiables
 
-1. **`skills/ducktective/SKILL.md` is the only copy of the skill.** The installer
-   ships it verbatim; `scripts/skill-single-source.test.mjs` fails if a second copy
-   appears or a shipped tool goes undocumented in it and in `docs/architecture.md`.
+1. **`skills/ducktective/SKILL.md` is the only copy of the `ducktective` contract.** The
+   installer ships it verbatim; `scripts/skill-single-source.test.mjs` fails if a second
+   SKILL.md whose frontmatter `name:` is `ducktective` appears, or a shipped tool goes
+   undocumented in it and in `docs/architecture.md`. Other skills may exist — the
+   benchmark is one — as long as they do not claim the name.
 2. **Nothing executes without `--yes`.** A denylist is theatre (any `&&` defeats one),
    so the human reads the exact command first. This is not a sandbox and the docs say
    so in those words.

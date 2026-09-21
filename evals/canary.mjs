@@ -43,6 +43,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { childEnv } from "../skills/ducktective/scripts/lib/exec.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPRODUCE = join(HERE, "..", "skills", "ducktective", "scripts", "reproduce.mjs");
@@ -159,17 +160,6 @@ export function summarise(rows) {
     ),
     byKind,
   };
-}
-
-/**
- * A nested `node --test` that inherits `NODE_TEST_*` exits 0 and prints nothing,
- * which would make every mutant read as "survived" the moment the canary itself
- * runs under `npm test`. Strip the runner's own plumbing from every child.
- */
-function childEnv() {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) if (/^NODE_TEST_/i.test(key)) delete env[key];
-  return env;
 }
 
 function run(command, cwd, timeout) {

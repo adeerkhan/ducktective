@@ -188,7 +188,7 @@ The JSONL is machine-readable on purpose: another skill can read the same file, 
 | Unit + integration | `npm test`                       | frame order, the verdict policy and its schema parity, id containment, policy refusals, tree-kill, bounded capture, installer behaviour, cause recurrence        |
 | Behaviour corpus   | `npm run eval`                   | the tools do what the docs say against real pytest/unittest/`node:test`/`coverage.py` runs — **self-authored cases**, so a regression net, not evidence of value |
 | Mutation canary    | `npm run canary`                 | candidate ranking did not regress since last night — **mutants are easier than real faults**, so a regression alarm, never product evidence                      |
-| Benchmark          | `npm test` (`bench/`)            | the C1–C12 capture path is correct — **not** a result; the arm runner is not built yet                                                                           |
+| Benchmark          | `npm test` (`bench/`)            | the benchmark instrument (materialiser, harness registry, arm runner, C1–C12) is correct and stub-proven — **not** a result; no real-model run yet               |
 | Run log            | `node evals/runlog.mjs --report` | whether it helps real bugs: M1–M4, each row tagged `real` or `constructed`                                                                                       |
 
 Two rules hold this section together. A metric nobody can record is a guess with a name, so
@@ -207,7 +207,8 @@ skills/ducktective/       the product
   scripts/                the four tools + check.mjs + lib/ (exec, args, case file, verdict policy)
   bin/install.mjs         the installer
   tests/                  tool tests + fixtures
-bench/                    the comparative benchmark (sources, metrics, smoke tests)
+skills/ducktective-bench/ the instrument: how to run the benchmark
+bench/                    the benchmark engine (materialise, run, report, harness adapters)
 docs/                     design, architecture reference, guide, implementation plan,
                           prior-art critique, and the objection this project was judged against
 evals/                    behaviour corpus, runner, results, run ledger

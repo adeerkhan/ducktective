@@ -57,6 +57,15 @@ test("an instance spec must name a repro and a gold hunk", () => {
     validateInstance({ ...INSTANCE, expect: { goldHunks: [{ file: "a" }] } }).join("\n"),
     /must be \{file, start, end\}/,
   );
+  for (const bad of [
+    { file: "a", start: 5, end: 2 },
+    { file: "a", start: 0, end: 2 },
+  ])
+    assert.match(
+      validateInstance({ ...INSTANCE, expect: { goldHunks: [bad] } }).join("\n"),
+      /1 <= start <= end/,
+      `accepted hunk ${JSON.stringify(bad)}`,
+    );
 });
 
 test("rate says 'no data' on an empty denominator, never 0%", () => {

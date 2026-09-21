@@ -17,6 +17,13 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SKILL = join(ROOT, "skills", "ducktective", "SKILL.md");
+const SKILL_NAME = "ducktective";
+
+/** The `name:` in a SKILL.md's YAML frontmatter, or null when absent. */
+function skillName(file) {
+  const [, frontmatter] = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(file, "utf8")) ?? [];
+  return frontmatter ? (/^name:\s*(\S+)\s*$/m.exec(frontmatter)?.[1] ?? null) : null;
+}
 
 // Match a filename token, not the suffix of run_check.mjs.
 function mentionsTool(text, tool) {
@@ -43,8 +50,18 @@ function skillFiles(dir) {
   return found;
 }
 
-test("the skill has one committed source of truth", () => {
-  assert.deepEqual(skillFiles(ROOT), [SKILL]);
+test("the ducktective skill has one committed source of truth", () => {
+  // Other skills may live here (the benchmark harness is one), but there must be
+  // exactly one contract whose frontmatter name is `ducktective`. The old check
+  // forbade *any* second SKILL.md, which conflated "one copy of the contract"
+  // with "only one skill in the repo".
+  const all = skillFiles(ROOT);
+  for (const file of all) assert.ok(skillName(file), `${file} has no \`name:\` in its frontmatter`);
+  assert.deepEqual(
+    all.filter((file) => skillName(file) === SKILL_NAME),
+    [SKILL],
+    "a second copy of the ducktective contract must not exist",
+  );
 });
 
 test("SKILL.md is a valid Agent Skill frontmatter for `ducktective`", () => {
